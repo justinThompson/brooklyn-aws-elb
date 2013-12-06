@@ -1,0 +1,10 @@
+target
+test-output
+.project
+.classpath
+.settings
+*.log
+.idea/
+*.iml
+.DS_Store
+*.sw[op]

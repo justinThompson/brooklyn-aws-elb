@@ -12,6 +12,12 @@
     </description>
     <url>https://github.com/cloudsoft/brooklyn-aws-elb/</url>
 
+    <parent>
+        <groupId>org.apache.brooklyn</groupId>
+        <artifactId>brooklyn-downstream-parent</artifactId>
+        <version>0.7.0-incubating</version> <!-- BROOKLYN_VERSION -->
+    </parent>
+    
     <licenses>
         <license>
             <name>The Apache Software License, Version 2.0</name>
@@ -32,26 +38,6 @@
         <url>http://github.com/cloudsoft/brooklyn-aws-elb</url>
     </scm>
 
-    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-
-        <testng.version>6.3.1</testng.version>
-        <brooklyn.version>0.7.0-incubating</brooklyn.version>
-        <surefire.version>2.13</surefire.version>
-    </properties>
-
-    <repositories>
-        <!-- enable sonatype snapshots repo (only for snapshots) -->
-        <repository>
-            <id>sonatype-nexus-snapshots</id>
-            <name>Sonatype Nexus Snapshots</name>
-            <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-            <releases> <enabled>false</enabled> </releases>
-            <snapshots> <enabled>true</enabled> </snapshots>
-        </repository>
-    </repositories>
-
     <dependencies>
         <dependency>
             <groupId>org.apache.brooklyn</groupId>
@@ -68,6 +54,7 @@
             <artifactId>brooklyn-locations-jclouds</artifactId>
             <version>${brooklyn.version}</version>
         </dependency>
+        
         <dependency>
             <groupId>com.amazonaws</groupId>
             <artifactId>aws-java-sdk</artifactId>
@@ -119,210 +106,130 @@
         <dependency>
             <groupId>org.apache.brooklyn</groupId>
             <artifactId>brooklyn-test-support</artifactId>
-            <version>${brooklyn.version}</version>
             <scope>test</scope>
+            <version>${brooklyn.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.brooklyn</groupId>
             <artifactId>brooklyn-core</artifactId>
-            <version>${brooklyn.version}</version>
             <classifier>tests</classifier>
             <scope>test</scope>
+            <version>${brooklyn.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.brooklyn</groupId>
             <artifactId>brooklyn-software-database</artifactId>
-            <version>${brooklyn.version}</version>
             <scope>test</scope>
+            <version>${brooklyn.version}</version>
         </dependency>
-        
         <dependency>
             <groupId>org.apache.brooklyn</groupId>
             <artifactId>brooklyn-software-base</artifactId>
-            <version>${brooklyn.version}</version>
             <classifier>tests</classifier>
             <scope>test</scope>
+            <version>${brooklyn.version}</version>
         </dependency>
     </dependencies>
     
     <build>
-        <testSourceDirectory>src/test/java</testSourceDirectory>
-        <testResources>
-            <testResource>
-                <directory>src/test/resources</directory>
-            </testResource>
-        </testResources>
-
-        <pluginManagement>
-            <plugins>
-                <plugin>
-                    <artifactId>maven-compiler-plugin</artifactId>
-                    <version>2.3.2</version>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-deploy-plugin</artifactId>
-                    <version>2.5</version>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-enforcer-plugin</artifactId>
-                    <version>1.0</version>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-failsafe-plugin</artifactId>
-                    <version>2.9</version>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-jar-plugin</artifactId>
-                    <version>2.3.1</version>
-                </plugin>
-
-                <plugin>
-                    <artifactId>maven-eclipse-plugin</artifactId>
-                    <version>2.8</version>
-                    <configuration>
-                        <additionalProjectnatures>
-                            <projectnature>org.maven.ide.eclipse.maven2Nature</projectnature>
-                        </additionalProjectnatures>
-                    </configuration>
-                </plugin>
-            </plugins>
-        </pluginManagement>
         <plugins>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
+                <groupId>org.apache.felix</groupId>
+                <artifactId>maven-bundle-plugin</artifactId>
+                <version>2.3.7</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <id>bundle-manifest</id>
+                        <phase>process-classes</phase>
+                        <goals>
+                            <goal>manifest</goal>
+                        </goals>
+                    </execution>
+                </executions>
                 <configuration>
-                    <source>1.6</source>
-                    <target>1.6</target>
+                    <supportedProjectTypes>
+                        <supportedProjectType>jar</supportedProjectType>
+                    </supportedProjectTypes>
+                    <instructions>
+                        <!-- OSGi specific instruction -->
+                        <Import-Package>!com.maxmind.geoip2,*</Import-Package>
+                    </instructions>
                 </configuration>
             </plugin>
-                <plugin>
-                    <artifactId>maven-source-plugin</artifactId>
-                    <version>2.1.2</version>
-                    <inherited>true</inherited>
-                    <executions>
-                        <execution>
-                            <id>attach-sources</id>
-                            <phase>verify</phase>
-                            <goals>
-                                <goal>jar-no-fork</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-javadoc-plugin</artifactId>
-                    <version>2.8</version>
-                    <inherited>true</inherited>
-                    <configuration>
-                        <!-- disabling use because of NPE deploying to sonatype:
-                             http://stackoverflow.com/questions/888199/why-does-maven-install-fail-during-javadoc-generation
-                             http://bugs.sun.com/bugdatabase/view_bug.do;jsessionid=ac084ab7f47c4e7f1df2117cecd?bug_id=5101868
-                        -->
-                        <use>false</use>
-                        <links>
-                            <link>http://download.oracle.com/javaee/6/api</link>
-                        </links>
-                        <keywords>true</keywords>
-                        <author>false</author>
-                        <quiet>true</quiet>
-                        <aggregate>false</aggregate>
-                        <detectLinks />
-                        <tags>
-                            <tag>
-                                <name>todo</name>
-                                <placement>a</placement>
-                                <head>To-do:</head>
-                            </tag>
-                        </tags>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <id>attach-javadocs</id>
-                            <goals>
-                                <goal>jar</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-gpg-plugin</artifactId>
-                    <version>1.1</version>
-                    <executions>
-                        <execution>
-                            <id>sign-artifacts</id>
-                            <phase>verify</phase>
-                            <goals>
-                                <goal>sign</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
-                    <!-- 'release' is not used; easier just to checkout, tag, `mvn deploy` manually
-                         with -Dbrooklyn.deployTo=TARGET ... and note we need to update docs and examples, 
-                         which is a non-maven task!) -->
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-release-plugin</artifactId>
-                    <version>2.1</version>
-                    <configuration>
-                        <mavenExecutorId>forked-path</mavenExecutorId>
-                        <useReleaseProfile>false</useReleaseProfile>
-                        <arguments>-Dbrooklyn.deployTo=sonatype</arguments>
-                    </configuration>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-resources-plugin</artifactId>
-                    <version>2.4.1</version>
-                </plugin>
-                <plugin>
-                     <artifactId>maven-surefire-plugin</artifactId>
-                     <version>${surefire.version}</version>
-                     <configuration>
-                         <argLine>-Xms256m -Xmx512m -XX:MaxPermSize=512m</argLine>
-                    </configuration>
-                </plugin>
         </plugins>
-    </build>
+     </build>
 
     <profiles>
-        <!-- sign and make javadoc when deploying; note, this means you'll need gpg set up to deploy -->
         <profile>
-            <id>make-more-things-when-deploying</id>
-            <activation> <property><name>brooklyn.deployTo</name></property> </activation>            
-            <build><plugins>
-                <plugin>
-                    <artifactId>maven-javadoc-plugin</artifactId>
-                </plugin>
-                <plugin>
-                    <artifactId>maven-gpg-plugin</artifactId>
-                </plugin>
-            </plugins></build>
+            <id>Release</id>
+            <activation>
+                <property>
+                    <name>brooklyn.deployTo</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <inherited>true</inherited>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <inherited>true</inherited>
+                        <configuration>
+                            <use>false</use>
+                            <links>
+                                <link>http://download.oracle.com/javaee/6/api</link>
+                            </links>
+                            <keywords>true</keywords>
+                            <author>false</author>
+                            <quiet>true</quiet>
+                            <aggregate>false</aggregate>
+                            <detectLinks />
+                        </configuration>
+                          <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
 
-        <!-- different properties used to deploy to different locations depending on profiles;
-            default is cloudsoft filesystem repo, but some sources still use cloudsoft artifactory as source
-            (and soon we will support artifactory) -->
         <profile>
-            <id>cloudsoft-filesystem-repo</id>
-            <activation> <property><name>brooklyn.deployTo</name><value>cloudsoftFilesystem</value></property> </activation>
-            <distributionManagement>
-                <repository>
-                    <id>cloudsoft-deploy-cloudfront-origin-releases</id>
-                    <name>Cloudsoft Release Filesystem repo (used as origin for cloudfront)</name>
-                    <url>scpexe://root@developers-origin.cloudsoftcorp.com/var/www/developers/maven/releases/</url>
-                </repository>
-                <snapshotRepository>
-                    <id>cloudsoft-deploy-cloudfront-origin-snapshots</id>
-                    <name>Cloudsoft Snapshot Filesystem repo (used as origin for cloudfront)</name>
-                    <url>scpexe://root@developers-origin.cloudsoftcorp.com/var/www/developers/maven/snapshots/</url>
-                </snapshotRepository>
-            </distributionManagement>
-        </profile>
-        <profile>
-            <id>cloudsoft-artifactory-repo</id>
-            <activation> <property><name>brooklyn.deployTo</name><value>cloudsoftArtifactory</value></property> </activation>
+            <id>cloudsoft-release</id>
+            <activation>
+                <property>
+                    <name>brooklyn.deployTo</name>
+                    <value>cloudsoft</value>
+                </property>
+            </activation>
             <distributionManagement>
                 <repository>
                     <id>cloudsoft-deploy-artifactory-release</id>
@@ -336,9 +243,12 @@
                 </snapshotRepository>
             </distributionManagement>
         </profile>
+
         <profile>
-            <id>sonatype-nexus-repo</id>
-            <activation> <property><name>brooklyn.deployTo</name><value>sonatype</value></property> </activation>
+            <id>sonatype-release</id>
+            <activation>
+                <property><name>brooklyn.deployTo</name><value>sonatype</value></property>
+            </activation>
             <distributionManagement>
                 <repository>
                     <id>sonatype-nexus-staging</id>
@@ -352,6 +262,7 @@
                 </snapshotRepository>
             </distributionManagement>
         </profile>
+
     </profiles>
 
 </project>

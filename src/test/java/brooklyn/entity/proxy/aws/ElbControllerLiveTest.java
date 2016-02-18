@@ -26,8 +26,8 @@ import org.apache.brooklyn.entity.webapp.tomcat.Tomcat8Server;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
 import org.apache.brooklyn.location.ssh.SshMachineLocation;
 import org.apache.brooklyn.test.Asserts;
-import org.apache.brooklyn.test.HttpTestUtils;
 import org.apache.brooklyn.util.exceptions.Exceptions;
+import org.apache.brooklyn.util.http.HttpAsserts;
 import org.apache.brooklyn.util.net.Networking;
 import org.apache.brooklyn.util.ssh.BashCommands;
 import org.apache.brooklyn.util.text.Identifiers;
@@ -230,14 +230,14 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         
         // double-check that app-server really is reachable (so don't complain about ELB if it's not ELB's fault!)
         String directurl = appserver.getAttribute(Tomcat8Server.ROOT_URL);
-        HttpTestUtils.assertHttpStatusCodeEventuallyEquals(directurl, 200);
-        HttpTestUtils.assertContentContainsText(directurl, "Hello");
+        HttpAsserts.assertHttpStatusCodeEventuallyEquals(directurl, 200);
+        HttpAsserts.assertContentContainsText(directurl, "Hello");
 
         Asserts.succeedsEventually(ImmutableMap.of("timeout", 5*60*1000), new Runnable() {
                 @Override public void run() {
                     String url = "http://"+elb.getAttribute(ElbController.HOSTNAME)+":80/";
-                    HttpTestUtils.assertHttpStatusCodeEventuallyEquals(url, 200);
-                    HttpTestUtils.assertContentContainsText(url, "Hello");
+                    HttpAsserts.assertHttpStatusCodeEventuallyEquals(url, 200);
+                    HttpAsserts.assertContentContainsText(url, "Hello");
                 }});
         
         assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableMap.of(appserver, machine.getNode().getProviderId()));

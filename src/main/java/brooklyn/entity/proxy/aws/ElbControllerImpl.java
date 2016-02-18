@@ -8,25 +8,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.jclouds.aws.ec2.AWSEC2ApiMetadata;
-import org.jclouds.aws.ec2.AWSEC2Client;
+import org.jclouds.aws.ec2.AWSEC2Api;
 import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import brooklyn.config.ConfigKey;
-import brooklyn.config.ConfigKey.HasConfigKey;
-import brooklyn.entity.Entity;
-import brooklyn.entity.basic.Attributes;
-import brooklyn.entity.basic.Lifecycle;
-import brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
-import brooklyn.location.Location;
-import brooklyn.location.cloud.CloudMachineNamer;
-import brooklyn.location.jclouds.JcloudsLocation;
-import brooklyn.location.jclouds.JcloudsSshMachineLocation;
-import brooklyn.util.config.ConfigBag;
-import brooklyn.util.text.Strings;
-import brooklyn.util.text.TemplateProcessor;
 
 import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.BasicAWSCredentials;
@@ -61,6 +46,20 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+
+import brooklyn.config.ConfigKey;
+import brooklyn.config.ConfigKey.HasConfigKey;
+import brooklyn.entity.Entity;
+import brooklyn.entity.basic.Attributes;
+import brooklyn.entity.basic.Lifecycle;
+import brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
+import brooklyn.location.Location;
+import brooklyn.location.jclouds.JcloudsLocation;
+import brooklyn.location.jclouds.JcloudsMachineNamer;
+import brooklyn.location.jclouds.JcloudsSshMachineLocation;
+import brooklyn.util.config.ConfigBag;
+import brooklyn.util.text.Strings;
+import brooklyn.util.text.TemplateProcessor;
 
 public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl implements ElbController {
 
@@ -416,7 +415,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         String elbName = null;
         ConfigBag setup = ConfigBag.newInstance(getAllConfig());
         for (int i = 0; i < maxAttempts; i++) {
-            elbName = new CloudMachineNamer(setup).generateNewGroupId();
+            elbName = new JcloudsMachineNamer().generateNewGroupId(setup);
             boolean exists = doesLoadBalancerExist(elbName);
             if (!exists) return elbName;
             LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; trying again (attempt {}) to generate name", new Object[] {elbName, this, (i+2)});
@@ -452,8 +451,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
         if (availabilityZones == null) {
             String regionName = getRegionName(loc);
-            AWSEC2Client ec2Client = loc.getComputeService().getContext().unwrap(AWSEC2ApiMetadata.CONTEXT_TOKEN).getApi();
-            Set<AvailabilityZoneInfo> zones = ec2Client.getAvailabilityZoneAndRegionServices().describeAvailabilityZonesInRegion(regionName);
+            AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
+            Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get().describeAvailabilityZonesInRegion(regionName);
             
             Set<String> result = Sets.newLinkedHashSet();
             for (AvailabilityZoneInfo zone : zones) {

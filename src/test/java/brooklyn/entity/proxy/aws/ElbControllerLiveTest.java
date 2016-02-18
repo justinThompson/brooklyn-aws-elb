@@ -18,7 +18,7 @@ import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 import brooklyn.config.BrooklynProperties;
-import brooklyn.entity.BrooklynMgmtContextTestSupport;
+import brooklyn.entity.BrooklynAppLiveTestSupport;
 import brooklyn.entity.basic.EmptySoftwareProcess;
 import brooklyn.entity.basic.SoftwareProcess;
 import brooklyn.entity.group.DynamicCluster;
@@ -45,7 +45,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.io.Files;
 
-public class ElbControllerLiveTest extends BrooklynMgmtContextTestSupport {
+public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     // TODO Add more tests
     // - other protocols, such as HTTPS, and TCP using `nc`

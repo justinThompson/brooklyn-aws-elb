@@ -2,16 +2,16 @@ package brooklyn.entity.proxy.aws;
 
 import java.util.Collection;
 
-import com.google.common.reflect.TypeToken;
+import org.apache.brooklyn.api.entity.ImplementedBy;
+import org.apache.brooklyn.api.sensor.AttributeSensor;
+import org.apache.brooklyn.config.ConfigKey;
+import org.apache.brooklyn.core.annotation.Effector;
+import org.apache.brooklyn.core.config.ConfigKeys;
+import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.sensor.BasicAttributeSensorAndConfigKey;
+import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedController;
 
-import brooklyn.config.ConfigKey;
-import brooklyn.entity.annotation.Effector;
-import brooklyn.entity.basic.Attributes;
-import brooklyn.entity.basic.ConfigKeys;
-import brooklyn.entity.proxy.AbstractNonProvisionedController;
-import brooklyn.entity.proxying.ImplementedBy;
-import brooklyn.event.AttributeSensor;
-import brooklyn.event.basic.BasicAttributeSensorAndConfigKey;
+import com.google.common.reflect.TypeToken;
 
 @ImplementedBy(ElbControllerImpl.class)
 public interface ElbController extends AbstractNonProvisionedController {
@@ -28,7 +28,11 @@ public interface ElbController extends AbstractNonProvisionedController {
             "Whether to replace an existing load balance (if one exists with this name), or fail if one already exists",
             false);
     
-    BasicAttributeSensorAndConfigKey<String> LOAD_BALANCER_NAME = new BasicAttributeSensorAndConfigKey(String.class, "aws.elb.loadBalancerName", "The ELB name", null);
+    BasicAttributeSensorAndConfigKey<String> LOAD_BALANCER_NAME = new BasicAttributeSensorAndConfigKey<String>(
+            String.class, 
+            "aws.elb.loadBalancerName", 
+            "The ELB name", 
+            null);
     
     ConfigKey<Integer> LOAD_BALANCER_PORT = ConfigKeys.newIntegerConfigKey("aws.elb.loadBalancerPort", "The ELB port", 80);
     
@@ -42,8 +46,9 @@ public interface ElbController extends AbstractNonProvisionedController {
 
     ConfigKey<String> INSTANCE_PROTOCOL = ConfigKeys.newStringConfigKey(
             "aws.elb.instanceProtocol", "The protocol for routing traffic to back-end instances (HTTP, HTTPS, TCP, or SSL)", "HTTP");
-            
-    ConfigKey<Collection<String>> AVAILABILITY_ZONES = (ConfigKey) ConfigKeys.newConfigKey(
+
+    @SuppressWarnings("serial")
+    ConfigKey<Collection<String>> AVAILABILITY_ZONES = ConfigKeys.newConfigKey(
             new TypeToken<Collection<String>>() {}, 
             "aws.elb.availabilityZones", 
             "The availability zones to balance across (defaults to all in region)", 
@@ -57,14 +62,16 @@ public interface ElbController extends AbstractNonProvisionedController {
                     + "an internal load balancer with a DNS name that resolves to private IP addresses.", 
             null);
 
-    ConfigKey<Collection<String>> LOAD_BALANCER_SECURITY_GROUPS = (ConfigKey) ConfigKeys.newConfigKey(
-            Collection.class,
+    @SuppressWarnings("serial")
+    ConfigKey<Collection<String>> LOAD_BALANCER_SECURITY_GROUPS = ConfigKeys.newConfigKey(
+            new TypeToken<Collection<String>>() {}, 
             "aws.elb.loadBalancerSecurityGroups", 
             "The security groups assigned to your LoadBalancer within your VPC",
             null);
     
-    ConfigKey<Collection<String>> LOAD_BALANCER_SUBNETS = (ConfigKey) ConfigKeys.newConfigKey(
-            Collection.class,
+    @SuppressWarnings("serial")
+    ConfigKey<Collection<String>> LOAD_BALANCER_SUBNETS = ConfigKeys.newConfigKey(
+            new TypeToken<Collection<String>>() {}, 
             "aws.elb.loadBalancerSubnets", 
             "A list of subnet IDs in your VPC to attach to your LoadBalancer",
             null);

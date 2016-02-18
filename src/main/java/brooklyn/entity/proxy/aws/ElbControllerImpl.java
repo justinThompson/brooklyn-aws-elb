@@ -8,6 +8,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.brooklyn.api.entity.Entity;
+import org.apache.brooklyn.api.location.Location;
+import org.apache.brooklyn.config.ConfigKey;
+import org.apache.brooklyn.config.ConfigKey.HasConfigKey;
+import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
+import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
+import org.apache.brooklyn.location.jclouds.JcloudsLocation;
+import org.apache.brooklyn.location.jclouds.JcloudsMachineNamer;
+import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
+import org.apache.brooklyn.util.core.config.ConfigBag;
+import org.apache.brooklyn.util.core.text.TemplateProcessor;
+import org.apache.brooklyn.util.text.Strings;
 import org.jclouds.aws.ec2.AWSEC2Api;
 import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.slf4j.Logger;
@@ -46,20 +59,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
-
-import brooklyn.config.ConfigKey;
-import brooklyn.config.ConfigKey.HasConfigKey;
-import brooklyn.entity.Entity;
-import brooklyn.entity.basic.Attributes;
-import brooklyn.entity.basic.Lifecycle;
-import brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
-import brooklyn.location.Location;
-import brooklyn.location.jclouds.JcloudsLocation;
-import brooklyn.location.jclouds.JcloudsMachineNamer;
-import brooklyn.location.jclouds.JcloudsSshMachineLocation;
-import brooklyn.util.config.ConfigBag;
-import brooklyn.util.text.Strings;
-import brooklyn.util.text.TemplateProcessor;
 
 public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl implements ElbController {
 
@@ -190,7 +189,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         } else {
             if (Strings.isBlank(elbName)) {
                 elbName = generateUnusedElbName();
-                setAttribute(LOAD_BALANCER_NAME, elbName);
+                sensors().set(LOAD_BALANCER_NAME, elbName);
             } else {
                 if (doesLoadBalancerExist(elbName)) {
                     throw new IllegalStateException("Cannot create ELB "+elbName+" in "+this+", because already exists (consider using configuration "+REPLACE_EXISTING.getName()+")");
@@ -258,7 +257,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 client.configureHealthCheck(healthCheckReq);
             }
             
-            setAttribute(Attributes.HOSTNAME, result.getDNSName());
+            sensors().set(Attributes.HOSTNAME, result.getDNSName());
             
         } finally {
             if (client != null) client.shutdown();
@@ -402,7 +401,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 }
             }
             
-            setAttribute(Attributes.HOSTNAME, loadBalancerDescription.getDNSName());
+            sensors().set(Attributes.HOSTNAME, loadBalancerDescription.getDNSName());
             
         } finally {
             if (client != null) client.shutdown();
@@ -414,13 +413,13 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     public void deleteLoadBalancer() {
         String elbName = checkNotNull(getAttribute(LOAD_BALANCER_NAME), "elbName");
         deleteLoadBalancer(elbName);
-        setAttribute(Attributes.SERVICE_STATE, Lifecycle.DESTROYED);
+        sensors().set(Attributes.SERVICE_STATE_ACTUAL, Lifecycle.DESTROYED);
     }
 
     protected String generateUnusedElbName() {
         int maxAttempts = 100;
         String elbName = null;
-        ConfigBag setup = ConfigBag.newInstance(getAllConfig());
+        ConfigBag setup = config().getBag();
         for (int i = 0; i < maxAttempts; i++) {
             elbName = new JcloudsMachineNamer().generateNewGroupId(setup);
             boolean exists = doesLoadBalancerExist(elbName);

@@ -11,6 +11,26 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.brooklyn.api.entity.EntitySpec;
+import org.apache.brooklyn.api.location.Location;
+import org.apache.brooklyn.api.location.LocationSpec;
+import org.apache.brooklyn.core.internal.BrooklynProperties;
+import org.apache.brooklyn.core.location.Locations;
+import org.apache.brooklyn.core.location.PortRanges;
+import org.apache.brooklyn.core.mgmt.internal.LocalManagementContext;
+import org.apache.brooklyn.core.test.BrooklynAppLiveTestSupport;
+import org.apache.brooklyn.entity.group.DynamicCluster;
+import org.apache.brooklyn.entity.software.base.EmptySoftwareProcess;
+import org.apache.brooklyn.entity.software.base.SoftwareProcess;
+import org.apache.brooklyn.entity.webapp.tomcat.Tomcat8Server;
+import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
+import org.apache.brooklyn.location.ssh.SshMachineLocation;
+import org.apache.brooklyn.test.Asserts;
+import org.apache.brooklyn.test.HttpTestUtils;
+import org.apache.brooklyn.util.exceptions.Exceptions;
+import org.apache.brooklyn.util.net.Networking;
+import org.apache.brooklyn.util.ssh.BashCommands;
+import org.apache.brooklyn.util.text.Identifiers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterMethod;
@@ -21,30 +41,8 @@ import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.io.Files;
-
-import brooklyn.config.BrooklynProperties;
-import brooklyn.entity.BrooklynAppLiveTestSupport;
-import brooklyn.entity.basic.EmptySoftwareProcess;
-import brooklyn.entity.basic.SoftwareProcess;
-import brooklyn.entity.group.DynamicCluster;
-import brooklyn.entity.proxying.EntitySpec;
-import brooklyn.entity.webapp.tomcat.Tomcat8Server;
-import brooklyn.location.Location;
-import brooklyn.location.LocationSpec;
-import brooklyn.location.basic.Locations;
-import brooklyn.location.basic.PortRanges;
-import brooklyn.location.basic.SshMachineLocation;
-import brooklyn.location.jclouds.JcloudsSshMachineLocation;
-import brooklyn.management.internal.LocalManagementContext;
-import brooklyn.test.Asserts;
-import brooklyn.test.HttpTestUtils;
-import brooklyn.util.exceptions.Exceptions;
-import brooklyn.util.net.Networking;
-import brooklyn.util.ssh.BashCommands;
-import brooklyn.util.text.Identifiers;
 
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
@@ -247,7 +245,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         cluster.resize(0);
         Asserts.succeedsEventually(new Runnable() {
             @Override public void run() {
-                assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableSet.of());
+                assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableMap.of());
             }});
     }
     
@@ -324,7 +322,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
             
             assertEquals(transferedData, "myexample\n");
             
-            assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableSet.of(machine.getNode().getProviderId()));
+            assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableMap.of(appserver, machine.getNode().getProviderId()));
 
         } finally {
             tempFile.delete();

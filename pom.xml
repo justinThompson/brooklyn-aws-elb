@@ -71,19 +71,50 @@
         <dependency>
             <groupId>com.amazonaws</groupId>
             <artifactId>aws-java-sdk</artifactId>
-            <version>1.5.3</version>
+            <version>1.10.53</version>
             <!-- The included version of Jackson breaks our REST UI -->
             <exclusions>
                 <exclusion>
-                        <artifactId>jackson-core-asl</artifactId>
-                        <groupId>org.codehaus.jackson</groupId>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-databind</groupId>
                 </exclusion>
                 <exclusion>
-                        <artifactId>jackson-mapper-asl</artifactId>
-                        <groupId>org.codehaus.jackson</groupId>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-annotations</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-core</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>joda-time</artifactId>
+                    <groupId>joda-time</groupId>
                 </exclusion>
             </exclusions>
         </dependency>
+        
+        <!-- alternative (excluded) dependencies, to match those other transitive dependencies in Brooklyn -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.4.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>2.2</version>
+        </dependency>
+        
         <!-- test dependencies -->
         <dependency>
             <groupId>org.apache.brooklyn</groupId>

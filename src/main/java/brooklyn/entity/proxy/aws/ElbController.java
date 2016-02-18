@@ -2,6 +2,8 @@ package brooklyn.entity.proxy.aws;
 
 import java.util.Collection;
 
+import com.google.common.reflect.TypeToken;
+
 import brooklyn.config.ConfigKey;
 import brooklyn.entity.annotation.Effector;
 import brooklyn.entity.basic.Attributes;
@@ -42,7 +44,10 @@ public interface ElbController extends AbstractNonProvisionedController {
             "aws.elb.instanceProtocol", "The protocol for routing traffic to back-end instances (HTTP, HTTPS, TCP, or SSL)", "HTTP");
             
     ConfigKey<Collection<String>> AVAILABILITY_ZONES = (ConfigKey) ConfigKeys.newConfigKey(
-            Collection.class, "aws.elb.availabilityZones", "The availability zones to balance across (defaults to all in region)", null);
+            new TypeToken<Collection<String>>() {}, 
+            "aws.elb.availabilityZones", 
+            "The availability zones to balance across (defaults to all in region)", 
+            null);
     
     ConfigKey<String> LOAD_BALANCER_SCHEME = ConfigKeys.newStringConfigKey(
             "aws.elb.loadBalancerScheme", 

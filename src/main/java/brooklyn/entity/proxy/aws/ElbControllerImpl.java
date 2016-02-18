@@ -110,6 +110,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     @Override
     public void stop() {
+        // TODO call deleteLoadBalancer()?
+        // TODO record service-up?
         loc = null;
     }
 
@@ -125,6 +127,11 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     @Override
     public void reload() {
+        if (loc == null) {
+            // TODO Guard this better, in case of concurrent calls
+            LOG.info("Not reloading ELB configuration, because ElbController is stopped");
+            return;
+        }
         String elbName = getAttribute(LOAD_BALANCER_NAME);
         Set<Instance> instances = Sets.newLinkedHashSet();
         for (String address : serverPoolAddresses) {
@@ -450,15 +457,20 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     private Set<String> getAvailabilityZones(JcloudsLocation loc) {
         Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
         if (availabilityZones == null) {
-            String regionName = getRegionName(loc);
-            AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
-            Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get().describeAvailabilityZonesInRegion(regionName);
-            
-            Set<String> result = Sets.newLinkedHashSet();
-            for (AvailabilityZoneInfo zone : zones) {
-                result.add(zone.getZone());
+            String locName = loc.getRegion();
+            if (isAvailabilityZone(locName)) {
+                return ImmutableSet.of(locName); // location is a single availability zone
+            } else {
+                String regionName = getRegionName(loc);
+                AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
+                Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get().describeAvailabilityZonesInRegion(regionName);
+                
+                Set<String> result = Sets.newLinkedHashSet();
+                for (AvailabilityZoneInfo zone : zones) {
+                    result.add(zone.getZone());
+                }
+                return result;
             }
-            return result;
         }
         return ImmutableSet.copyOf(availabilityZones);
     }
@@ -470,6 +482,10 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             regionName = regionName.substring(0, regionName.length()-1);
         }
         return regionName;
+    }
+    
+    protected boolean isAvailabilityZone(String name) {
+        return Strings.isNonBlank(name) && Character.isLetter(name.charAt(name.length()-1));
     }
     
     protected AmazonElasticLoadBalancingClient newClient(JcloudsLocation loc) {

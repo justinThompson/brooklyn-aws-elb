@@ -6,7 +6,7 @@ import static org.testng.Assert.assertNotEquals;
 import static org.testng.Assert.assertNotNull;
 
 import java.io.File;
-import java.net.URL;
+import java.net.URI;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -17,15 +17,24 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
+import com.google.common.base.Charsets;
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.io.Files;
+
 import brooklyn.config.BrooklynProperties;
 import brooklyn.entity.BrooklynAppLiveTestSupport;
 import brooklyn.entity.basic.EmptySoftwareProcess;
 import brooklyn.entity.basic.SoftwareProcess;
 import brooklyn.entity.group.DynamicCluster;
 import brooklyn.entity.proxying.EntitySpec;
-import brooklyn.entity.webapp.jboss.JBoss7Server;
+import brooklyn.entity.webapp.tomcat.Tomcat8Server;
 import brooklyn.location.Location;
 import brooklyn.location.LocationSpec;
+import brooklyn.location.basic.Locations;
 import brooklyn.location.basic.PortRanges;
 import brooklyn.location.basic.SshMachineLocation;
 import brooklyn.location.jclouds.JcloudsSshMachineLocation;
@@ -37,14 +46,6 @@ import brooklyn.util.net.Networking;
 import brooklyn.util.ssh.BashCommands;
 import brooklyn.util.text.Identifiers;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Joiner;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.io.Files;
-
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     // TODO Add more tests
@@ -52,15 +53,20 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     // - removing nodes cleanly, to ensure they are removed from the pool
     // - health checker, to ensure  
     
+    // Note we need to pass an explicit list of AZs - if it tries to use all of them, then get an error
+    // that us-east-1a and us-east-1d are not compatible.
+    
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerLiveTest.class);
 
     public static final String PROVIDER = "aws-ec2";
     public static final String REGION_NAME = "us-east-1";
+    public static final List<String> AVAILABILITY_ZONES = ImmutableList.of("us-east-1b", "us-east-1a");
     public static final String LOCATION_SPEC = PROVIDER + (REGION_NAME == null ? "" : ":" + REGION_NAME);
+    public static final String LOCATION_AZ_SPEC = PROVIDER + ":" + AVAILABILITY_ZONES.get(0);
     public static final String TINY_HARDWARE_ID = "t1.micro";
     public static final String SMALL_HARDWARE_ID = "m1.small";
 
-    private URL warUrl = checkNotNull(getClass().getClassLoader().getResource("hello-world.war"));
+    private static final URI warUri = URI.create("https://repo1.maven.org/maven2/org/apache/brooklyn/example/brooklyn-example-hello-world-webapp/0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war");
 
     // Image: {id=us-east-1/ami-7d7bfc14, providerId=ami-7d7bfc14, name=RightImage_CentOS_6.3_x64_v5.8.8.5, location={scope=REGION, id=us-east-1, description=us-east-1, parent=aws-ec2, iso3166Codes=[US-VA]}, os={family=centos, arch=paravirtual, version=6.0, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, is64Bit=true}, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, version=5.8.8.5, status=AVAILABLE[available], loginUser=root, userMetadata={owner=411009282317, rootDeviceType=instance-store, virtualizationType=paravirtual, hypervisor=xen}}
     //runTest(ImmutableMap.of("imageId", "us-east-1/ami-7d7bfc14", "hardwareId", SMALL_HARDWARE_ID));
@@ -68,6 +74,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     protected BrooklynProperties brooklynProperties;
     
     protected Location loc;
+    protected Location locAZ;
     protected List<Location> locs;
 
     private ElbController elb;
@@ -94,6 +101,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         
         Map<String,?> flags = ImmutableMap.of("tags", ImmutableList.of(getClass().getName()));
         loc = mgmt.getLocationRegistry().resolve(LOCATION_SPEC, flags);
+        locAZ = mgmt.getLocationRegistry().resolve(LOCATION_AZ_SPEC, flags);
         locs = ImmutableList.of(loc);
         
         localMachine = mgmt.getLocationManager().createLocation(LocationSpec.create(SshMachineLocation.class)
@@ -121,6 +129,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public void testCreateLoadBalancer() throws Exception {
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.INSTANCE_PORT, 8080));
         
         app.start(locs);
@@ -132,13 +141,15 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public void testRebindLoadBalancer() throws Exception {
         String elbName = "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8);
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
-                .configure(ElbController.LOAD_BALANCER_NAME, elbName));
+                .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES));
         app.start(locs);
         String origHostname = elb.getAttribute(ElbController.HOSTNAME);
 
         // With no interesting differences in configuration
         ElbController elb2 = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.BIND_TO_EXISTING, true));
         elb2.start(locs);
         assertEquals(elb2.getAttribute(ElbController.HOSTNAME), origHostname);
@@ -147,6 +158,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         // TODO test scheme, subnets and security groups
         ElbController elb3 = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.BIND_TO_EXISTING, true)
                 .configure(ElbController.HEALTH_CHECK_ENABLED, false)
                 .configure(ElbController.INSTANCE_PORT, 1234)
@@ -162,12 +174,14 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public void testReplaceExistingLoadBalancerForbiddenByDefault() throws Exception {
         String elbName = "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8);
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
-                .configure(ElbController.LOAD_BALANCER_NAME, elbName));
+                .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES));
         app.start(locs);
         
         // Cannot replace an existing load balancer unless EXPLICITLY configured to do so
         ElbController elb2 = app.createAndManageChild(EntitySpec.create(ElbController.class)
-                .configure(ElbController.LOAD_BALANCER_NAME, elbName));
+                .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES));
         try {
             elb2.start(locs);
         } catch (Exception e) {
@@ -181,12 +195,14 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         String elbName = "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8);
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.INSTANCE_PORT, 8080));
         app.start(locs);
         String origHostname = elb.getAttribute(ElbController.HOSTNAME);
         
         ElbController elb2 = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.REPLACE_EXISTING, true));
         elb2.start(locs);
 
@@ -198,23 +214,24 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public void testLoadBalancerWithHttpTargets() throws Exception {
         DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
                 .configure(DynamicCluster.INITIAL_SIZE, 1)
-                .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(JBoss7Server.class)
-                        .configure("war", warUrl.toString())
-                        .configure(JBoss7Server.HTTP_PORT, PortRanges.fromInteger(8080))));
+                .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(Tomcat8Server.class)
+                        .configure("war", warUri.toString())
+                        .configure(Tomcat8Server.HTTP_PORT, PortRanges.fromInteger(8080))));
         
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
                 .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
                 .configure(ElbController.LOAD_BALANCER_PORT, 80)
                 .configure(ElbController.INSTANCE_PORT, 8080));
         
-        app.start(ImmutableList.of(loc));
+        app.start(ImmutableList.<Location>of(locAZ));
         
-        JBoss7Server appserver = (JBoss7Server) Iterables.getOnlyElement(cluster.getMembers());
-        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Iterables.getOnlyElement(appserver.getLocations());
+        Tomcat8Server appserver = (Tomcat8Server) Iterables.getOnlyElement(cluster.getMembers());
+        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Locations.findUniqueMachineLocation(appserver.getLocations()).get();
         
-        // double-check that jboss really is reachable (so don't complain about ELB if it's not ELB's fault!)
-        String directurl = appserver.getAttribute(JBoss7Server.ROOT_URL);
+        // double-check that app-server really is reachable (so don't complain about ELB if it's not ELB's fault!)
+        String directurl = appserver.getAttribute(Tomcat8Server.ROOT_URL);
         HttpTestUtils.assertHttpStatusCodeEventuallyEquals(directurl, 200);
         HttpTestUtils.assertContentContainsText(directurl, "Hello");
 
@@ -225,7 +242,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                     HttpTestUtils.assertContentContainsText(url, "Hello");
                 }});
         
-        assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableSet.of(machine.getNode().getProviderId()));
+        assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableMap.of(appserver, machine.getNode().getProviderId()));
         
         cluster.resize(0);
         Asserts.succeedsEventually(new Runnable() {
@@ -241,15 +258,16 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(DynamicCluster.INITIAL_SIZE, 0));
         
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
                 .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
                 .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
                 .configure(ElbController.LOAD_BALANCER_PORT, 1234)
                 .configure(ElbController.INSTANCE_PORT, 1235)
-        		.configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}"));
+                .configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}"));
         
-        app.start(ImmutableList.of(loc));
+        app.start(ImmutableList.<Location>of(locAZ));
         final String elbHostname = elb.getAttribute(ElbController.HOSTNAME);
         assertNotNull(elbHostname);
     }
@@ -269,19 +287,20 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                                 "hardwareId", SMALL_HARDWARE_ID))));
         
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
                 .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
                 .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
                 .configure(ElbController.LOAD_BALANCER_PORT, 1234)
                 .configure(ElbController.INSTANCE_PORT, 1235)
-        		.configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}"));
+                .configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}"));
         
-        app.start(ImmutableList.of(loc));
+        app.start(ImmutableList.<Location>of(locAZ));
         final String elbHostname = elb.getAttribute(ElbController.HOSTNAME);
 
-        SoftwareProcess server = (SoftwareProcess) Iterables.getOnlyElement(cluster.getMembers());
-        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Iterables.getOnlyElement(server.getLocations());
+        SoftwareProcess appserver = (SoftwareProcess) Iterables.getOnlyElement(cluster.getMembers());
+        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Locations.findUniqueMachineLocation(appserver.getLocations()).get();
         
         String remoteFile = "/tmp/nc.out-"+Identifiers.makeRandomId(8);
         File tempFile = File.createTempFile("test-nc", ".out");

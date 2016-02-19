@@ -8,18 +8,27 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import javax.annotation.Nullable;
+
 import org.apache.brooklyn.api.entity.Entity;
 import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.config.ConfigKey;
 import org.apache.brooklyn.config.ConfigKey.HasConfigKey;
 import org.apache.brooklyn.core.entity.Attributes;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
+import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic;
+import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic.ServiceProblemsLogic;
+import org.apache.brooklyn.core.feed.ConfigToAttributes;
+import org.apache.brooklyn.core.location.Locations;
+import org.apache.brooklyn.core.location.Machines;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
 import org.apache.brooklyn.location.jclouds.JcloudsLocation;
 import org.apache.brooklyn.location.jclouds.JcloudsMachineNamer;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
 import org.apache.brooklyn.util.core.config.ConfigBag;
 import org.apache.brooklyn.util.core.text.TemplateProcessor;
+import org.apache.brooklyn.util.exceptions.Exceptions;
+import org.apache.brooklyn.util.guava.Maybe;
 import org.apache.brooklyn.util.text.Strings;
 import org.jclouds.aws.ec2.AWSEC2Api;
 import org.jclouds.ec2.domain.AvailabilityZoneInfo;
@@ -87,31 +96,82 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
      *  - Go through com.amazonaws.services.elasticloadbalancing.AmazonElasticLoadBalancingClient carefully, to see nothing else is missed
      */
     
-//    does rebind() remove old instances?!
-//    cassandra load balancing?
+    // TODO Add unit tests for rebind
     
+    // TODO Use the SoftwareProcess's approach of expectedState and serviceUpIndicators
+    // TODO What should lifecycle be if effector deleteLoadBalancer is called?
+
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerImpl.class);
 
-    private JcloudsLocation loc;
+    @Override
+    protected void doStart(Collection<? extends Location> locations) {
+        ServiceProblemsLogic.clearProblemsIndicator(this, START);
+        ServiceStateLogic.setExpectedState(this, Lifecycle.STARTING);
+        try {
+            JcloudsLocation loc = inferLocation(locations);
+            checkArgument("aws-ec2".equals(loc.getProvider()), "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)", loc.getProvider(), loc);
+            sensors().set(JCLOUDS_LOCATION, loc);
+            
+            ConfigToAttributes.apply(this);
+            
+            startLoadBalancer();
+            isActive = true;
+            
+            sensors().set(SERVICE_UP, true);
+            
+        } finally {
+            ServiceStateLogic.setExpectedState(this, Lifecycle.RUNNING);
+        }
+    }
+
+    protected JcloudsLocation getLocation() {
+        JcloudsLocation result = getAttribute(JCLOUDS_LOCATION);
+        checkNotNull(result, "JcloudsLocation not set - was ELB started, or has it been stopped?");
+        return result;
+    }
+    
+    protected JcloudsLocation inferLocation(@Nullable Collection<? extends Location> locations) {
+        if (locations==null || locations.isEmpty()) locations = getLocations();
+        locations = Locations.getLocationsCheckingAncestors(locations, this);
+
+        Maybe<JcloudsLocation> result = Machines.findUniqueElement(locations, JcloudsLocation.class);
+        if (result.isPresent()) {
+            return result.get();
+        }
+        
+        if (locations == null || locations.isEmpty()) {
+            throw new IllegalArgumentException("No locations specified when starting "+this);
+        } else if (locations.size() != 1 || Iterables.getOnlyElement(locations)==null) {
+            throw new IllegalArgumentException("Ambiguous locations detected when starting "+this+": "+locations);
+        } else {
+            throw new IllegalArgumentException("No matching JcloudsLocation when starting "+this+": "+locations);
+        }
+    }
+
+    @Override
+    protected String inferProtocol() {
+        String result = config().get(LOAD_BALANCER_PROTOCOL);
+        return (result == null ? result : result.toLowerCase());
+    }
     
     @Override
-    public void start(Collection<? extends Location> locations) {
-        super.start(locations);
-        checkArgument(locations.size() == 1, "start must have exactly one location, but given %s (%s)", locations.size(), locations);
-        Location onlyloc = Iterables.getOnlyElement(locations);
-        checkArgument(onlyloc instanceof JcloudsLocation, "start must have exactly one location, of type JcloudsLocation, but given %s (%s)", (onlyloc != null ? onlyloc.getClass() : null), onlyloc);
-        loc = (JcloudsLocation) onlyloc;
-        checkArgument("aws-ec2".equals(loc.getProvider()), "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)", loc.getProvider(), loc);
-        
-        startLoadBalancer();
-        isActive = true;
+    protected String inferUrl() {
+        String protocol = inferProtocol();
+        String domain = getAttribute(Attributes.HOSTNAME);
+        Integer port = config().get(LOAD_BALANCER_PORT);
+        return protocol + "://" + domain + (port == null ? "" : ":"+port);
     }
 
     @Override
     public void stop() {
-        // TODO call deleteLoadBalancer()?
-        // TODO record service-up?
-        loc = null;
+        // TODO should we deleteLoadBalancer?
+        String elbName = getAttribute(LOAD_BALANCER_NAME);
+        JcloudsLocation loc = getAttribute(JCLOUDS_LOCATION);
+        if (elbName != null && loc != null && doesLoadBalancerExist(elbName)) {
+            deleteLoadBalancer(elbName);
+        }
+        ServiceStateLogic.setExpectedState(this, Lifecycle.STOPPED);
+        sensors().set(SERVICE_UP, false);
     }
 
     @Override
@@ -126,36 +186,53 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     @Override
     public void reload() {
-        if (loc == null) {
-            // TODO Guard this better, in case of concurrent calls
-            LOG.info("Not reloading ELB configuration, because ElbController is stopped");
-            return;
-        }
-        String elbName = getAttribute(LOAD_BALANCER_NAME);
-        Set<Instance> instances = Sets.newLinkedHashSet();
-        for (String address : serverPoolAddresses) {
-            Instance instance = new Instance(address);
-            instances.add(instance);
-        }
-
-        AmazonElasticLoadBalancingClient client = newClient(loc);
         try {
-            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
-            List<LoadBalancerDescription> loadBalancerDescriptions = loadBalancers.getLoadBalancerDescriptions();
-            Set<Instance> oldInstances = ImmutableSet.copyOf(loadBalancerDescriptions.get(0).getInstances());
-            Set<Instance> removedInstances = Sets.difference(oldInstances, instances);
-            Set<Instance> addedInstances = Sets.difference(instances, oldInstances);
+            JcloudsLocation loc = sensors().get(JCLOUDS_LOCATION);
             
-            if (!addedInstances.isEmpty()) {
-                RegisterInstancesWithLoadBalancerRequest registerRequest = new RegisterInstancesWithLoadBalancerRequest(elbName, ImmutableList.copyOf(addedInstances));
-                client.registerInstancesWithLoadBalancer(registerRequest);
+            if (Boolean.FALSE.equals(sensors().get(SERVICE_UP))) {
+                // TODO Guard this better, in case of concurrent calls?
+                // TODO guard with lifecycle state, so will do this when starting?
+                LOG.info("Not reloading ELB configuration, because ElbController is not running");
+                return;
             }
-            if (!removedInstances.isEmpty()) {
-                DeregisterInstancesFromLoadBalancerRequest deregisterRequest = new DeregisterInstancesFromLoadBalancerRequest(elbName, ImmutableList.copyOf(removedInstances));
-                client.deregisterInstancesFromLoadBalancer(deregisterRequest);
+            if (loc == null) {
+                // TODO Guard this better, in case of concurrent calls?
+                // TODO guard with lifecycle state, so will do this when starting?
+                LOG.warn("No location for ELB "+this+", cannot reload");
+                return;
             }
-        } finally {
-            if (client != null) client.shutdown();
+            String elbName = getAttribute(LOAD_BALANCER_NAME);
+            Set<String> targetAddresses = super.getServerPoolAddresses();
+            Set<Instance> instances = Sets.newLinkedHashSet();
+            for (String address : targetAddresses) {
+                Instance instance = new Instance(address);
+                instances.add(instance);
+            }
+    
+            LOG.debug("Reloading ELB "+elbName+"; instances="+instances);
+    
+            AmazonElasticLoadBalancingClient client = newClient(loc);
+            try {
+                DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
+                List<LoadBalancerDescription> loadBalancerDescriptions = loadBalancers.getLoadBalancerDescriptions();
+                Set<Instance> oldInstances = ImmutableSet.copyOf(loadBalancerDescriptions.get(0).getInstances());
+                Set<Instance> removedInstances = Sets.difference(oldInstances, instances);
+                Set<Instance> addedInstances = Sets.difference(instances, oldInstances);
+                
+                if (!addedInstances.isEmpty()) {
+                    RegisterInstancesWithLoadBalancerRequest registerRequest = new RegisterInstancesWithLoadBalancerRequest(elbName, ImmutableList.copyOf(addedInstances));
+                    client.registerInstancesWithLoadBalancer(registerRequest);
+                }
+                if (!removedInstances.isEmpty()) {
+                    DeregisterInstancesFromLoadBalancerRequest deregisterRequest = new DeregisterInstancesFromLoadBalancerRequest(elbName, ImmutableList.copyOf(removedInstances));
+                    client.deregisterInstancesFromLoadBalancer(deregisterRequest);
+                }
+            } finally {
+                if (client != null) client.shutdown();
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("Problem reloading", e);
+            throw Exceptions.propagate(e);
         }
     }
     
@@ -201,6 +278,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     }
 
     protected void createLoadBalancer(String elbName) {
+        JcloudsLocation loc = getLocation();
+        
         int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
         int instancePort = getRequiredConfig(INSTANCE_PORT);
         String instanceProtocol = getRequiredConfig(INSTANCE_PROTOCOL);
@@ -216,6 +295,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         Integer healthCheckHealthyThreshold = getConfig(HEALTH_CHECK_HEALTHY_THRESHOLD);
         Integer healthCheckUnhealthyThreshold = getConfig(HEALTH_CHECK_UNHEALTHY_THRESHOLD);
         
+        LOG.debug("Creating new ELB '"+elbName+"', for server-pool "+getConfig(SERVER_POOL));
+
         AmazonElasticLoadBalancingClient client = newClient(loc);
         try {
             CreateLoadBalancerRequest createLoadBalancerRequest = new CreateLoadBalancerRequest();
@@ -265,6 +346,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     }
 
     protected void reinitLoadBalancer() {
+        JcloudsLocation loc = getLocation();
         String elbName = checkNotNull(getAttribute(LOAD_BALANCER_NAME), LOAD_BALANCER_NAME.getName());
 
         int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
@@ -282,6 +364,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         Integer healthCheckHealthyThreshold = getConfig(HEALTH_CHECK_HEALTHY_THRESHOLD);
         Integer healthCheckUnhealthyThreshold = getConfig(HEALTH_CHECK_UNHEALTHY_THRESHOLD);
         
+        LOG.debug("Re-initialising existing ELB: "+elbName);
+
         AmazonElasticLoadBalancingClient client = newClient(loc);
         try {
             // Find out about existing load balancer, so can clear+reset its configuration
@@ -413,7 +497,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     public void deleteLoadBalancer() {
         String elbName = checkNotNull(getAttribute(LOAD_BALANCER_NAME), "elbName");
         deleteLoadBalancer(elbName);
-        sensors().set(Attributes.SERVICE_STATE_ACTUAL, Lifecycle.DESTROYED);
     }
 
     protected String generateUnusedElbName() {
@@ -430,6 +513,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     }
     
     protected boolean doesLoadBalancerExist(String elbName) {
+        JcloudsLocation loc = getLocation();
         AmazonElasticLoadBalancingClient client = newClient(loc);
         try {
             DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
@@ -444,6 +528,9 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     }
 
     protected void deleteLoadBalancer(String elbName) {
+        JcloudsLocation loc = getLocation();
+        LOG.debug("Deleting ELB: "+elbName);
+
         AmazonElasticLoadBalancingClient client = newClient(loc);
         try {
             DeleteLoadBalancerRequest deleteLoadBalancerRequest = new DeleteLoadBalancerRequest(elbName);

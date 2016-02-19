@@ -8,13 +8,28 @@ import org.apache.brooklyn.config.ConfigKey;
 import org.apache.brooklyn.core.annotation.Effector;
 import org.apache.brooklyn.core.config.ConfigKeys;
 import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
+import org.apache.brooklyn.core.entity.lifecycle.Lifecycle.Transition;
 import org.apache.brooklyn.core.sensor.BasicAttributeSensorAndConfigKey;
+import org.apache.brooklyn.core.sensor.Sensors;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedController;
+import org.apache.brooklyn.location.jclouds.JcloudsLocation;
 
 import com.google.common.reflect.TypeToken;
 
 @ImplementedBy(ElbControllerImpl.class)
 public interface ElbController extends AbstractNonProvisionedController {
+
+    AttributeSensor<Lifecycle> SERVICE_STATE_ACTUAL = Attributes.SERVICE_STATE_ACTUAL;
+    AttributeSensor<Transition> SERVICE_STATE_EXPECTED = Attributes.SERVICE_STATE_EXPECTED;
+
+    AttributeSensor<Boolean> ELB_IS_RUNNING = Sensors.newBooleanSensor("aws.elb.isRunning",
+            "Whether the ELB is confirmed as running");
+
+    AttributeSensor<JcloudsLocation> JCLOUDS_LOCATION = Sensors.newSensor(
+            JcloudsLocation.class,
+            "aws.elb.jcloudsLocation",
+            "AWS jclouds location");
 
     AttributeSensor<String> HOSTNAME = Attributes.HOSTNAME;
 

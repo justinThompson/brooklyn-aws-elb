@@ -14,6 +14,9 @@ import java.util.Map;
 import org.apache.brooklyn.api.entity.EntitySpec;
 import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.api.location.LocationSpec;
+import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.entity.EntityAsserts;
+import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.internal.BrooklynProperties;
 import org.apache.brooklyn.core.location.Locations;
 import org.apache.brooklyn.core.location.PortRanges;
@@ -130,9 +133,12 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.INSTANCE_PORT, 8080));
         
-        app.start(locs);
+        app.addLocations(locs);
+        app.start(ImmutableList.<Location>of());
         
         checkNotNull(elb.getAttribute(ElbController.HOSTNAME));
+        EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_UP, true);
+        EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
     }
     
     @Test(groups="Live")

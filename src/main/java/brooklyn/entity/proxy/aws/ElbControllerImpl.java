@@ -139,7 +139,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     private String checkLoadBalancerName(AttributeSensor<String> attributeSensor) {
         String elbName = getAttribute(attributeSensor);
-        checkArgument(elbName.length() < 32);
+        checkArgument(elbName.length() <= 32, "elbName is too long, must be less than 32 chars: " + elbName);
         return elbName;
     }
 

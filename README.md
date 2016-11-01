@@ -20,7 +20,8 @@ To build, run `mvn clean install`.
 | 0.1.x   | 0.1.0-SNAPSHOT | 0.6.0                   |
 | 0.2.x   | 0.2.0-SNAPSHOT | 0.7.0-incubating        |
 | 0.3.x   | 0.3.0-SNAPSHOT | 0.8.0-incubating        |
-| master  | 0.4.0-SNAPSHOT | 0.9.0-SNAPSHOT          |
+| 0.4.x   | 0.4.0-SNAPSHOT | 0.9.0                   |
+| master  | 0.5.0-SNAPSHOT | 0.10.0-SNAPSHOT         |
 
 
 ## Example
@@ -32,7 +33,7 @@ of OSGi):
     BROOKLYN_AWS_ELB_REPO=~/repos/cloudsoft/brooklyn-aws-elb
     MAVEN_REPO=~/.m2/repository
     AWS_SDK_VERSION=1.10.53
-    BROOKLYN_AWS_ELB_VERSION=0.4.0-SNAPSHOT
+    BROOKLYN_AWS_ELB_VERSION=0.5.0-SNAPSHOT
     
     cp ${BROOKLYN_AWS_ELB_REPO}/target/brooklyn-aws-elb-${BROOKLYN_AWS_ELB_VERSION}.jar ${BROOKLYN_HOME}/lib/dropins/
     cp ${MAVEN_REPO}/com/amazonaws/aws-java-sdk*/${AWS_SDK_VERSION}/*.jar ${BROOKLYN_HOME}/lib/dropins/

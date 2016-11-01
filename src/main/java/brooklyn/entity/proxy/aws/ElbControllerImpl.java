@@ -288,7 +288,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
         Collection<String> subnets = getConfig(LOAD_BALANCER_SUBNETS);
         String sslCertificateId = getConfig(SSL_CERTIFICATE_ID);
-        Set<String> availabilityZoneNames = getAvailabilityZones(loc);
+        Set<String> availabilityZoneNames = (getConfig(AVAILABILITY_ZONES) != null) ? getAvailabilityZones(loc) : null;
         Boolean healthCheckEnabled = getConfig(HEALTH_CHECK_ENABLED);
         Integer healthCheckInterval = getConfig(HEALTH_CHECK_INTERVAL);
         Integer healthCheckTimeout = getConfig(HEALTH_CHECK_TIMEOUT);
@@ -302,7 +302,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             CreateLoadBalancerRequest createLoadBalancerRequest = new CreateLoadBalancerRequest();
 
             createLoadBalancerRequest.setLoadBalancerName(elbName);
-            createLoadBalancerRequest.setAvailabilityZones(availabilityZoneNames);
+            if (availabilityZoneNames != null) createLoadBalancerRequest.setAvailabilityZones(availabilityZoneNames);
             if (Strings.isNonBlank(elbScheme)) createLoadBalancerRequest.setScheme(elbScheme);
             if (securityGroups != null) createLoadBalancerRequest.setSecurityGroups(securityGroups);
             if (subnets != null) createLoadBalancerRequest.setSubnets(subnets);
@@ -581,7 +581,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         
         Region targetRegion = Region.getRegion(Regions.fromName(regionName));
         client.setRegion(targetRegion);
-        
+
         return client;
     }
     

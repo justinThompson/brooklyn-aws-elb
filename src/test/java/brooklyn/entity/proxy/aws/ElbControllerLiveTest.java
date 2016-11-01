@@ -1,12 +1,11 @@
 package brooklyn.entity.proxy.aws;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotEquals;
-import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.*;
 
 import java.io.File;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -37,15 +36,33 @@ import org.apache.brooklyn.util.text.Identifiers;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterMethod;
+import org.testng.annotations.AfterSuite;
 import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.BeforeSuite;
 import org.testng.annotations.Test;
 
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.regions.Region;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.ec2.AmazonEC2Client;
+import com.amazonaws.services.ec2.model.AttachInternetGatewayRequest;
+import com.amazonaws.services.ec2.model.CreateInternetGatewayResult;
+import com.amazonaws.services.ec2.model.CreateSubnetRequest;
+import com.amazonaws.services.ec2.model.CreateSubnetResult;
+import com.amazonaws.services.ec2.model.CreateVpcRequest;
+import com.amazonaws.services.ec2.model.CreateVpcResult;
+import com.amazonaws.services.ec2.model.DeleteInternetGatewayRequest;
+import com.amazonaws.services.ec2.model.DeleteSubnetRequest;
+import com.amazonaws.services.ec2.model.DeleteVpcRequest;
+import com.amazonaws.services.ec2.model.DetachInternetGatewayRequest;
 import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.io.Files;
+
 
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
@@ -66,25 +83,46 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final String LOCATION_AZ_SPEC = PROVIDER + ":" + AVAILABILITY_ZONES.get(0);
     public static final String TINY_HARDWARE_ID = "t1.micro";
     public static final String SMALL_HARDWARE_ID = "m1.small";
+    public static final String CIDR = "10.0.0.9/16";
 
     private static final URI warUri = URI.create("https://repo1.maven.org/maven2/org/apache/brooklyn/example/brooklyn-example-hello-world-webapp/0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war");
+    public static final String BROOKLYN_LOCATION_JCLOUDS_AWS_EC2_IDENTITY = "brooklyn.location.jclouds.aws-ec2.identity";
+    public static final String BROOKLYN_LOCATION_JCLOUDS_AWS_EC2_CREDENTIAL = "brooklyn.location.jclouds.aws-ec2.credential";
 
     // Image: {id=us-east-1/ami-7d7bfc14, providerId=ami-7d7bfc14, name=RightImage_CentOS_6.3_x64_v5.8.8.5, location={scope=REGION, id=us-east-1, description=us-east-1, parent=aws-ec2, iso3166Codes=[US-VA]}, os={family=centos, arch=paravirtual, version=6.0, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, is64Bit=true}, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, version=5.8.8.5, status=AVAILABLE[available], loginUser=root, userMetadata={owner=411009282317, rootDeviceType=instance-store, virtualizationType=paravirtual, hypervisor=xen}}
     //runTest(ImmutableMap.of("imageId", "us-east-1/ami-7d7bfc14", "hardwareId", SMALL_HARDWARE_ID));
 
     protected BrooklynProperties brooklynProperties;
-    
+    protected String testVpcId;
+    protected String testGatewayId;
+    protected List<String> testSubnets = new ArrayList<>();
     protected Location loc;
     protected Location locAZ;
     protected List<Location> locs;
 
+    protected ElbControllerImpl objectUnderTest;
+
     private ElbController elb;
 
     private SshMachineLocation localMachine;
-    
+    private AmazonEC2Client client;
+
     @BeforeMethod(alwaysRun=true)
     @Override
     public void setUp() throws Exception {
+        super.setUp();
+        
+        Map<String,?> flags = ImmutableMap.of("tags", ImmutableList.of(getClass().getName()));
+        loc = mgmt.getLocationRegistry().resolve(LOCATION_SPEC, flags);
+        locAZ = mgmt.getLocationRegistry().resolve(LOCATION_AZ_SPEC, flags);
+        locs = ImmutableList.of(loc);
+        
+        localMachine = mgmt.getLocationManager().createLocation(LocationSpec.create(SshMachineLocation.class)
+                .configure("address", Networking.getLocalHost()));
+        objectUnderTest = new ElbControllerImpl();
+    }
+    @BeforeSuite
+    public void beforeSuite(){
         // Don't let any defaults from brooklyn.properties (except credentials) interfere with test
         brooklynProperties = BrooklynProperties.Factory.newDefault();
         brooklynProperties.remove("brooklyn.jclouds."+PROVIDER+".image-description-regex");
@@ -95,20 +133,14 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
         // Also removes scriptHeader (e.g. if doing `. ~/.bashrc` and `. ~/.profile`, then that can cause "stdin: is not a tty")
         brooklynProperties.remove("brooklyn.ssh.config.scriptHeader");
-        
-        mgmt = new LocalManagementContext(brooklynProperties);
-        
-        super.setUp();
-        
-        Map<String,?> flags = ImmutableMap.of("tags", ImmutableList.of(getClass().getName()));
-        loc = mgmt.getLocationRegistry().resolve(LOCATION_SPEC, flags);
-        locAZ = mgmt.getLocationRegistry().resolve(LOCATION_AZ_SPEC, flags);
-        locs = ImmutableList.of(loc);
-        
-        localMachine = mgmt.getLocationManager().createLocation(LocationSpec.create(SshMachineLocation.class)
-                .configure("address", Networking.getLocalHost()));
-    }
 
+        mgmt = new LocalManagementContext(brooklynProperties);
+        client = createEc2Client();
+
+        createVPC();
+        attachInternetGatewayToVPC();
+        createSubnet();
+    }
     @AfterMethod(alwaysRun=true)
     @Override
     public void tearDown() throws Exception {
@@ -125,7 +157,15 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
             super.tearDown();
         }
     }
-
+    @AfterSuite
+    public void cleanUpAWS(){
+        for(int i = 0; i < testSubnets.size(); i++){
+            deleteSubnet(testSubnets.remove(i));
+        }
+        deleteInternetGatway(testGatewayId);
+        deleteVPC(testVpcId);
+        client.shutdown();
+    }
     @Test(groups="Live")
     public void testCreateLoadBalancer() throws Exception {
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
@@ -139,6 +179,22 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         checkNotNull(elb.getAttribute(ElbController.HOSTNAME));
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_UP, true);
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
+    }
+    @Test(groups="Live")
+    public void testCreateLoadBalancerWithSubnets() throws Exception {
+
+        elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
+                .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, testSubnets)
+                .configure(ElbController.INSTANCE_PORT, 8080));
+
+        app.addLocations(locs);
+        app.start(ImmutableList.<Location>of());
+
+        checkNotNull(elb.getAttribute(ElbController.HOSTNAME));
+        EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_UP, true);
+        EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
+
     }
     
     @Test(groups="Live")
@@ -334,5 +390,83 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
             tempFile.delete();
             machine.execScript("kill-tunnel", Arrays.asList("kill `ps aux | grep ssh | grep \"localhost:24684\" | awk '{print $2}'`"));
         }
+    }
+
+    public void createVPC() {
+        CreateVpcRequest request = new CreateVpcRequest()
+                .withCidrBlock(CIDR);
+
+        CreateVpcResult result = client.createVpc(request);
+
+        if (result != null && result.getVpc() != null) {
+            testVpcId = result.getVpc().getVpcId();
+            LOG.debug("created a VPC here is the id: {}", testVpcId);
+        }
+    }
+    public void attachInternetGatewayToVPC(){
+        CreateInternetGatewayResult gateway = client.createInternetGateway();
+
+        if (gateway != null && gateway.getInternetGateway() != null) {
+            testGatewayId = gateway.getInternetGateway().getInternetGatewayId();
+            LOG.debug("created internet gateway: {}", testGatewayId);
+        }
+
+        AttachInternetGatewayRequest request = new AttachInternetGatewayRequest()
+                .withVpcId(testVpcId)
+                .withInternetGatewayId(gateway.getInternetGateway().getInternetGatewayId());
+
+        client.attachInternetGateway(request);
+        LOG.debug("Attached gateway: {} to vpc: {}", testGatewayId, testVpcId);
+    }
+
+    public void deleteVPC(final String vpcId) {
+        LOG.debug("Cleaning up VPC:{}",vpcId);
+        DeleteVpcRequest request = new DeleteVpcRequest()
+                .withVpcId(vpcId);
+        client.deleteVpc(request);
+    }
+
+    public void createSubnet (){
+            CreateSubnetRequest request = new CreateSubnetRequest()
+                    .withVpcId(testVpcId)
+                    .withCidrBlock(CIDR);
+
+            CreateSubnetResult result = client.createSubnet(request);
+            if (result != null && result.getSubnet() != null) {
+                testSubnets.add(result.getSubnet().getSubnetId());
+                LOG.info("created a subnet:{}",result.getSubnet().getSubnetId());
+            }
+    }
+    public void deleteSubnet (final String subnetId){
+        LOG.debug("Cleaning up subnet:{}",subnetId);
+        DeleteSubnetRequest request = new DeleteSubnetRequest()
+                .withSubnetId(subnetId);
+        client.deleteSubnet(request);
+    }
+
+    public void deleteInternetGatway(final String gatewayId){
+        LOG.debug("Cleaning up Internet Gateway:{}", gatewayId);
+        DetachInternetGatewayRequest detachInternetGatewayRequest = new DetachInternetGatewayRequest()
+                .withVpcId(testVpcId)
+                .withInternetGatewayId(gatewayId);
+
+        client.detachInternetGateway(detachInternetGatewayRequest);
+        LOG.debug("Detaching gateway: {} from vpc: {}", testGatewayId, testVpcId);
+
+        DeleteInternetGatewayRequest deleteInternetGatewayRequest = new DeleteInternetGatewayRequest()
+                .withInternetGatewayId(gatewayId);
+        client.deleteInternetGateway(deleteInternetGatewayRequest);
+    }
+
+    public AmazonEC2Client createEc2Client (){
+        String identity = mgmt.getBrooklynProperties().get(BROOKLYN_LOCATION_JCLOUDS_AWS_EC2_IDENTITY).toString();
+        String credential = mgmt.getBrooklynProperties().get(BROOKLYN_LOCATION_JCLOUDS_AWS_EC2_CREDENTIAL).toString();
+
+        AWSCredentials awsCredentials = new BasicAWSCredentials(identity, credential);
+        AmazonEC2Client client = new AmazonEC2Client(awsCredentials);
+
+        Region targetRegion = Region.getRegion(Regions.fromName(REGION_NAME));
+        client.setRegion(targetRegion);
+        return client;
     }
 }

@@ -105,6 +105,12 @@
         <!-- test dependencies -->
         <dependency>
             <groupId>org.apache.brooklyn</groupId>
+            <artifactId>brooklyn-all</artifactId>
+            <version>${brooklyn.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.brooklyn</groupId>
             <artifactId>brooklyn-test-support</artifactId>
             <scope>test</scope>
             <version>${brooklyn.version}</version>

@@ -10,6 +10,7 @@ import org.apache.brooklyn.core.config.ConfigKeys;
 import org.apache.brooklyn.core.entity.Attributes;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle.Transition;
+import org.apache.brooklyn.core.sensor.AttributeSensorAndConfigKey;
 import org.apache.brooklyn.core.sensor.BasicAttributeSensorAndConfigKey;
 import org.apache.brooklyn.core.sensor.Sensors;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedController;
@@ -35,7 +36,7 @@ public interface ElbController extends AbstractNonProvisionedController {
 
     ConfigKey<Boolean> BIND_TO_EXISTING = ConfigKeys.newBooleanConfigKey(
             "aws.elb.bindToExisting", 
-            "Whether to bind to an existing load balance, or create a new one", 
+            "Whether to bind to an existing load balancer or create a new one",
             false);
     
     ConfigKey<Boolean> REPLACE_EXISTING = ConfigKeys.newBooleanConfigKey(
@@ -78,18 +79,15 @@ public interface ElbController extends AbstractNonProvisionedController {
             null);
 
     @SuppressWarnings("serial")
-    ConfigKey<Collection<String>> LOAD_BALANCER_SECURITY_GROUPS = ConfigKeys.newConfigKey(
+    BasicAttributeSensorAndConfigKey<Collection<String>> LOAD_BALANCER_SECURITY_GROUPS = new BasicAttributeSensorAndConfigKey<>(
             new TypeToken<Collection<String>>() {}, 
             "aws.elb.loadBalancerSecurityGroups", 
-            "The security groups assigned to your LoadBalancer within your VPC",
-            null);
+            "The security groups assigned to your LoadBalancer within your VPC");
     
-    @SuppressWarnings("serial")
-    ConfigKey<Collection<String>> LOAD_BALANCER_SUBNETS = ConfigKeys.newConfigKey(
-            new TypeToken<Collection<String>>() {}, 
+    BasicAttributeSensorAndConfigKey<Collection<String>> LOAD_BALANCER_SUBNETS = new BasicAttributeSensorAndConfigKey<>(
+            new TypeToken<Collection<String>>() {},
             "aws.elb.loadBalancerSubnets", 
-            "A list of subnet IDs in your VPC to attach to your LoadBalancer",
-            null);
+            "A list of subnet IDs in your VPC to attach to your LoadBalancer");
     
     // http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/elasticloadbalancing/model/HealthCheck.html#setTarget(java.lang.String)
     ConfigKey<String> HEALTH_CHECK_TARGET = ConfigKeys.newStringConfigKey(

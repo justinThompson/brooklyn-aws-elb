@@ -7,7 +7,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-
+import java.util.concurrent.Callable;
 import javax.annotation.Nullable;
 
 import org.apache.brooklyn.api.entity.Entity;
@@ -19,9 +19,12 @@ import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic.ServiceProblemsLogic;
 import org.apache.brooklyn.core.feed.ConfigToAttributes;
+import org.apache.brooklyn.core.feed.PollConfig;
 import org.apache.brooklyn.core.location.Locations;
 import org.apache.brooklyn.core.location.Machines;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
+import org.apache.brooklyn.feed.function.FunctionFeed;
+import org.apache.brooklyn.feed.function.FunctionPollConfig;
 import org.apache.brooklyn.location.jclouds.JcloudsLocation;
 import org.apache.brooklyn.location.jclouds.JcloudsMachineNamer;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
@@ -30,6 +33,7 @@ import org.apache.brooklyn.util.core.text.TemplateProcessor;
 import org.apache.brooklyn.util.exceptions.Exceptions;
 import org.apache.brooklyn.util.guava.Maybe;
 import org.apache.brooklyn.util.text.Strings;
+import org.apache.brooklyn.util.time.Duration;
 import org.jclouds.aws.ec2.AWSEC2Api;
 import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.slf4j.Logger;
@@ -103,6 +107,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerImpl.class);
 
+    private FunctionFeed elbAttributesFeed;
+
     @Override
     protected void doStart(Collection<? extends Location> locations) {
         ServiceProblemsLogic.clearProblemsIndicator(this, START);
@@ -111,16 +117,44 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             JcloudsLocation loc = inferLocation(locations);
             checkArgument("aws-ec2".equals(loc.getProvider()), "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)", loc.getProvider(), loc);
             sensors().set(JCLOUDS_LOCATION, loc);
-            
-            ConfigToAttributes.apply(this);
-            
+
+            ConfigToAttributes.apply(this, LOAD_BALANCER_NAME);
+
             startLoadBalancer();
             isActive = true;
             
             sensors().set(SERVICE_UP, true);
-            
         } finally {
             ServiceStateLogic.setExpectedState(this, Lifecycle.RUNNING);
+        }
+    }
+
+    @Override
+    protected void postStart() {
+        super.postStart();
+        elbAttributesFeed = FunctionFeed.builder()
+                .entity(this)
+                .onlyIfServiceUp()
+                .period(Duration.THIRTY_SECONDS)
+                .poll(FunctionPollConfig.forSensor(PollConfig.NO_SENSOR).callable(new RepublishAttributesCallable()))
+                .build();
+    }
+
+    protected void republishAttributes() {
+        AmazonElasticLoadBalancingClient client = null;
+        try {
+            client = newClient(inferLocation(ImmutableList.of(getLocation())));
+            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest().withLoadBalancerNames(sensors().get(LOAD_BALANCER_NAME)));
+            LoadBalancerDescription elb = loadBalancers.getLoadBalancerDescriptions().iterator().next();
+            sensors().set(LOAD_BALANCER_SUBNETS, elb.getSubnets());
+            sensors().set(LOAD_BALANCER_SECURITY_GROUPS, elb.getSecurityGroups());
+            ServiceProblemsLogic.clearProblemsIndicator(this, "attributes");
+        } catch (Exception e) {
+            ServiceProblemsLogic.updateProblemsIndicator(this, "attributes", "Failed to retrieve ELB data: " + e.getMessage());
+            sensors().set(LOAD_BALANCER_SUBNETS, null);
+            sensors().set(LOAD_BALANCER_SECURITY_GROUPS, null);
+        } finally {
+            if (client != null) client.shutdown();
         }
     }
 
@@ -160,6 +194,15 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         String domain = getAttribute(Attributes.HOSTNAME);
         Integer port = config().get(LOAD_BALANCER_PORT);
         return protocol + "://" + domain + (port == null ? "" : ":"+port);
+    }
+
+    @Override
+    protected void preStop() {
+        if (elbAttributesFeed != null) {
+            elbAttributesFeed.stop();
+            elbAttributesFeed = null;
+        }
+        super.preStop();
     }
 
     @Override
@@ -339,7 +382,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             }
             
             sensors().set(Attributes.HOSTNAME, result.getDNSName());
-            
         } finally {
             if (client != null) client.shutdown();
         }
@@ -578,7 +620,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         String regionName = getRegionName(loc);
         AWSCredentials awsCredentials = new BasicAWSCredentials(loc.getIdentity(), loc.getCredential());
         AmazonElasticLoadBalancingClient client = new AmazonElasticLoadBalancingClient(awsCredentials);
-        
+
         Region targetRegion = Region.getRegion(Regions.fromName(regionName));
         client.setRegion(targetRegion);
         
@@ -592,5 +634,13 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     protected <T> T getRequiredConfig(HasConfigKey<T> key) {
         return checkNotNull(getConfig(key), key.getConfigKey().getName());
     }
-    
+
+    private class RepublishAttributesCallable implements Callable<Void> {
+        @Override
+        public Void call() throws Exception {
+            republishAttributes();
+            return null;
+        }
+    }
+
 }

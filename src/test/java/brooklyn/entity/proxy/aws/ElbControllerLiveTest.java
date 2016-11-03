@@ -8,6 +8,7 @@ import static org.testng.Assert.assertNotNull;
 import java.io.File;
 import java.net.URI;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -15,6 +16,7 @@ import org.apache.brooklyn.api.entity.EntitySpec;
 import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.api.location.LocationSpec;
 import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.entity.Entities;
 import org.apache.brooklyn.core.entity.EntityAsserts;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.internal.BrooklynProperties;
@@ -42,6 +44,7 @@ import org.testng.annotations.Test;
 
 import com.google.common.base.Charsets;
 import com.google.common.base.Joiner;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
@@ -139,6 +142,9 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         checkNotNull(elb.getAttribute(ElbController.HOSTNAME));
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_UP, true);
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SUBNETS, Predicates.<Collection<String>>notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SECURITY_GROUPS, Predicates.notNull());
+        Entities.dumpInfo(elb);
     }
     
     @Test(groups="Live")
@@ -150,10 +156,16 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         app.start(locs);
         String origHostname = elb.getAttribute(ElbController.HOSTNAME);
 
+        EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SUBNETS, Predicates.<Collection<String>>notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SECURITY_GROUPS, Predicates.notNull());
+
         // With no interesting differences in configuration
         ElbController elb2 = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
+                .configure(ElbController.LOAD_BALANCER_SECURITY_GROUPS, elb.sensors().get(ElbController.LOAD_BALANCER_SECURITY_GROUPS))
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, elb.sensors().get(ElbController.LOAD_BALANCER_SUBNETS))
                 .configure(ElbController.BIND_TO_EXISTING, true));
         elb2.start(locs);
         assertEquals(elb2.getAttribute(ElbController.HOSTNAME), origHostname);
@@ -167,6 +179,8 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.HEALTH_CHECK_ENABLED, false)
                 .configure(ElbController.INSTANCE_PORT, 1234)
                 .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
+                .configure(ElbController.LOAD_BALANCER_SECURITY_GROUPS, elb.sensors().get(ElbController.LOAD_BALANCER_SECURITY_GROUPS))
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, elb.sensors().get(ElbController.LOAD_BALANCER_SUBNETS))
                 .configure(ElbController.LOAD_BALANCER_PORT, 1235)
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP"));
 

@@ -144,6 +144,9 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
         EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SUBNETS, Predicates.<Collection<String>>notNull());
         EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SECURITY_GROUPS, Predicates.notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.VPC_ID, Predicates.notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.CANONICAL_HOSTED_ZONE_ID, Predicates.notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.CANONICAL_HOSTED_ZONE_NAME, Predicates.notNull());
         Entities.dumpInfo(elb);
     }
     

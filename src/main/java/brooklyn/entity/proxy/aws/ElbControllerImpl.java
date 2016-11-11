@@ -148,11 +148,17 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             LoadBalancerDescription elb = loadBalancers.getLoadBalancerDescriptions().iterator().next();
             sensors().set(LOAD_BALANCER_SUBNETS, elb.getSubnets());
             sensors().set(LOAD_BALANCER_SECURITY_GROUPS, elb.getSecurityGroups());
+            sensors().set(CANONICAL_HOSTED_ZONE_NAME, elb.getCanonicalHostedZoneName());
+            sensors().set(CANONICAL_HOSTED_ZONE_ID, elb.getCanonicalHostedZoneNameID());
+            sensors().set(VPC_ID, elb.getVPCId());
             ServiceProblemsLogic.clearProblemsIndicator(this, "attributes");
         } catch (Exception e) {
             ServiceProblemsLogic.updateProblemsIndicator(this, "attributes", "Failed to retrieve ELB data: " + e.getMessage());
             sensors().set(LOAD_BALANCER_SUBNETS, null);
             sensors().set(LOAD_BALANCER_SECURITY_GROUPS, null);
+            sensors().set(CANONICAL_HOSTED_ZONE_ID, null);
+            sensors().set(CANONICAL_HOSTED_ZONE_NAME, null);
+            sensors().set(VPC_ID, null);
         } finally {
             if (client != null) client.shutdown();
         }

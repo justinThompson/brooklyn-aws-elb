@@ -88,7 +88,7 @@ public interface ElbController extends AbstractNonProvisionedController {
             new TypeToken<Collection<String>>() {},
             "aws.elb.loadBalancerSubnets", 
             "A list of subnet IDs in your VPC to attach to your LoadBalancer");
-    
+
     // http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/elasticloadbalancing/model/HealthCheck.html#setTarget(java.lang.String)
     ConfigKey<String> HEALTH_CHECK_TARGET = ConfigKeys.newStringConfigKey(
             "aws.elb.healthCheck.target", "Specifies the instance being checked", "${instanceProtocol}:${instancePort?c}/");
@@ -107,6 +107,18 @@ public interface ElbController extends AbstractNonProvisionedController {
     
     ConfigKey<Integer> HEALTH_CHECK_UNHEALTHY_THRESHOLD = ConfigKeys.newIntegerConfigKey(
             "aws.elb.healthCheck.unhealthyThreshold", "The number of consecutive health probe failures required before moving the instance to the Unhealthy state", 2);
+
+    AttributeSensor<String> CANONICAL_HOSTED_ZONE_NAME = Sensors.newStringSensor(
+            "aws.elb.canonicalHostedZoneName",
+            "The hosted zone name of the ELB");
+
+    AttributeSensor<String> CANONICAL_HOSTED_ZONE_ID = Sensors.newStringSensor(
+            "aws.elb.canonicalHostedZoneId",
+            "The hosted zone ID of the ELB");
+
+    AttributeSensor<String> VPC_ID = Sensors.newStringSensor(
+            "aws.elb.vpcId",
+            "The id of the VPC the ELB is attached to");
 
     @Effector(description="Deletes the ELB")
     void deleteLoadBalancer();

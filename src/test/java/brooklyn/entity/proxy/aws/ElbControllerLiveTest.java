@@ -1,16 +1,15 @@
 package brooklyn.entity.proxy.aws;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotEquals;
-import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.*;
 
-import java.io.File;
+import java.io.IOException;
+import java.net.Socket;
 import java.net.URI;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.brooklyn.api.entity.Entity;
 import org.apache.brooklyn.api.entity.EntitySpec;
 import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.api.location.LocationSpec;
@@ -40,12 +39,9 @@ import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
-import com.google.common.io.Files;
 
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
@@ -66,6 +62,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final String LOCATION_AZ_SPEC = PROVIDER + ":" + AVAILABILITY_ZONES.get(0);
     public static final String TINY_HARDWARE_ID = "t1.micro";
     public static final String SMALL_HARDWARE_ID = "m1.small";
+    public static final int TCP_PORT = 1234;
 
     private static final URI warUri = URI.create("https://repo1.maven.org/maven2/org/apache/brooklyn/example/brooklyn-example-hello-world-webapp/0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war");
 
@@ -128,7 +125,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     @Test(groups="Live")
     public void testCreateLoadBalancer() throws Exception {
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
-                .configure(ElbController.LOAD_BALANCER_NAME, "create-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
+                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("create"))
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.INSTANCE_PORT, 8080));
 
@@ -142,10 +139,12 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     @Test(groups="Live")
     public void testRebindLoadBalancer() throws Exception {
-        String elbName = generateElbName("rebindLB");
+        String elbName = generateElbName("rebind");
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
-                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES));
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
+                .configure(ElbController.INSTANCE_PORT, 8080));
+
         app.start(locs);
         String origHostname = elb.getAttribute(ElbController.HOSTNAME);
 
@@ -175,7 +174,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     private String generateElbName(String prefix) {
         String elbName = String.format("%s-%s-%s", prefix, System.getProperty("user.name"), Identifiers.makeRandomId(8));
-        return elbName.length() > 32 ? elbName.substring(0, 32) : elbName;
+        return elbName.length() > 32 ? elbName.substring(0, 31) : elbName;
     }
 
     @Test(groups="Live")
@@ -220,16 +219,19 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     @Test(groups="Live")
     public void testLoadBalancerWithHttpTargets() throws Exception {
+
         DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
                 .configure(DynamicCluster.INITIAL_SIZE, 1)
                 .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(Tomcat8Server.class)
                         .configure("war", warUri.toString())
+                        .configure(DynamicCluster.AVAILABILITY_ZONE_NAMES, AVAILABILITY_ZONES)
                         .configure(Tomcat8Server.HTTP_PORT, PortRanges.fromInteger(8080))));
+
 
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
-                .configure(ElbController.LOAD_BALANCER_NAME, "httpsTargets-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
+                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("httpsTargets"))
                 .configure(ElbController.LOAD_BALANCER_PORT, 80)
                 .configure(ElbController.INSTANCE_PORT, 8080));
 
@@ -263,12 +265,13 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     @Test(groups={"Live", "Live-sanity"})
     public void testLoadBalancerWithTcpTargetsAndEmptyCluster() throws Exception {
         DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
+                .configure(DynamicCluster.AVAILABILITY_ZONE_NAMES, AVAILABILITY_ZONES)
                 .configure(DynamicCluster.INITIAL_SIZE, 0));
 
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
-                .configure(ElbController.LOAD_BALANCER_NAME, "tcpTargetsAndEmptyCluster-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
+                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("tcpTargetsAndEmptyCluster"))
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
                 .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
                 .configure(ElbController.LOAD_BALANCER_PORT, 1234)
@@ -285,8 +288,8 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     // for whether the command returns properly (hence the `-w 10`) and whether the output file gets
     // populated. Should we use stdout?
     @Test(groups={"Live", "WIP"})
-    public void testLoadBalancerWithTcpTargets() throws Exception {
-        DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
+    public void testLoadBalancerWithTcpTargets()  {
+        final DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
                 .configure(DynamicCluster.INITIAL_SIZE, 1)
                 .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(EmptySoftwareProcess.class)
                         .configure(SoftwareProcess.PROVISIONING_PROPERTIES, ImmutableMap.<String,Object>of(
@@ -297,10 +300,10 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
-                .configure(ElbController.LOAD_BALANCER_NAME, "tcpTargets-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
+                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("tcpTargets"))
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
                 .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
-                .configure(ElbController.LOAD_BALANCER_PORT, 1234)
+                .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
                 .configure(ElbController.INSTANCE_PORT, 1235)
                 .configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}")
                 .configure(ElbController.HEALTH_CHECK_UNHEALTHY_THRESHOLD, 10));
@@ -309,36 +312,47 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         app.start(ImmutableList.<Location>of(locAZ));
         final String elbHostname = elb.getAttribute(ElbController.HOSTNAME);
 
-        SoftwareProcess appserver = (SoftwareProcess) Iterables.getOnlyElement(cluster.getMembers());
-        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Locations.findUniqueMachineLocation(appserver.getLocations()).get();
+        SoftwareProcess appServer = (SoftwareProcess) Iterables.getOnlyElement(cluster.getMembers());
+        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Locations.findUniqueMachineLocation(appServer.getLocations()).get();
 
-        String remoteFile = "/tmp/nc.out-"+Identifiers.makeRandomId(8);
-        File tempFile = File.createTempFile("test-nc", ".out");
+        // Set up `nc` (and will you that to setup server-side port listener, and to connect to it)
+        ImmutableList<String> installNcCommand = ImmutableList.of(BashCommands.installPackage(ImmutableMap.of("apt-get", "netcat", "yum", "nc.x86_64"), "netcat"));
+        machine.execScript("install-nc", installNcCommand);
+        machine.execScript("run-nc-listener", ImmutableList.of("nohup nc -l 1235 &"));
 
-        try {
-            // Set up `nc` (and will you that to setup server-side port listener, and to connect to it)
-            ImmutableList<String> installNcCommand = ImmutableList.of(BashCommands.installPackage(ImmutableMap.of("apt-get", "netcat", "yum", "nc.x86_64"), "netcat"));
-            machine.execScript("install-nc", installNcCommand);
-            localMachine.execScript("install-nc", installNcCommand);
-            machine.execScript("run-nc-listener", ImmutableList.of("nohup nc -l 1235 > "+remoteFile+" &"));
 
-            // Keep trying to connect to this port through the ELB (will fail until the ELB has been updated)
-            Asserts.succeedsEventually(ImmutableMap.of("timeout", 5*60*1000), new Runnable() {
-                    @Override public void run() {
-                        int returnCode = localMachine.execScript("run-nc-connector", ImmutableList.of("echo \"myexample\" | nc -w 10 "+elbHostname+" 1234"));
-                        assertEquals(returnCode, 0);
-                    }});
+        // test the tcp connection directly
+        Asserts.succeedsEventually(new Runnable() {
+            @Override
+            public void run() {
+                assertTrue(cluster.getAttribute(DynamicCluster.CLUSTER_ONE_AND_ALL_MEMBERS_UP));
+                Entity instance = (Entity) cluster.getChildren().toArray()[1];
+                final String instanceAddress = instance.getAttribute(Attributes.ADDRESS);
 
-            machine.copyFrom(remoteFile, tempFile.getAbsolutePath());
-            String transferedData = Joiner.on("\n").join(Files.readLines(tempFile, Charsets.UTF_8));
+                try {
+                    final Socket tcpClient = new Socket(instanceAddress, 1235);
+                    assertTrue(tcpClient.isConnected());
+                } catch (IOException e) {
+                    fail("could not directly connect to " + instanceAddress + " on port " + 1235);
+                }
+            }
+        });
 
-            assertEquals(transferedData, "myexample\n");
+        Asserts.succeedsEventually(new Runnable() {
+               @Override
+               public void run() {
 
-            assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableMap.of(appserver, machine.getNode().getProviderId()));
+                   try {
+                       final Socket tcpClient = new Socket(elbHostname, TCP_PORT);
+                       assertTrue(tcpClient.isConnected());
+                   } catch (IOException e) {
+                       fail("could not connect to " + elbHostname + " on port " + TCP_PORT);
+                   }
+               }
+        });
 
-        } finally {
-            tempFile.delete();
-            machine.execScript("kill-tunnel", Arrays.asList("kill `ps aux | grep ssh | grep \"localhost:24684\" | awk '{print $2}'`"));
-        }
+        assertEquals(elb.getAttribute(ElbController.SERVER_POOL_TARGETS), ImmutableMap.of(appServer, machine.getNode().getProviderId()));
+
     }
+
 }

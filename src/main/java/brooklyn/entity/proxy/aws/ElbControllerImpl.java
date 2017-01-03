@@ -38,6 +38,7 @@ import org.jclouds.elb.domain.Listener;
 import org.jclouds.elb.domain.LoadBalancer;
 import org.jclouds.elb.domain.Protocol;
 import org.jclouds.elb.domain.Scheme;
+import org.jclouds.elb.features.LoadBalancerApi;
 import org.jclouds.loadbalancer.LoadBalancerServiceContext;
 import org.jclouds.util.Closeables2;
 import org.slf4j.Logger;
@@ -303,7 +304,10 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                     .port(loadBalancerPort)
                     .build();
             if (Strings.isNonBlank(sslCertificateId)) listener.toBuilder().SSLCertificateId(sslCertificateId);
-            api.getLoadBalancerApi().createListeningInSubnetsAssignedToSecurityGroups(elbName, subnets, securityGroups != null ? securityGroups : ImmutableList.<String>of());
+
+            if(securityGroups != null) {
+                api.getLoadBalancerApi().createListeningInSubnetsAssignedToSecurityGroups(elbName, subnets, securityGroups);
+            }
 
             // Reset the health check
             /*
@@ -369,7 +373,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
-            return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(elbName) != null;
+            return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(loc.getRegion()+"/"+elbName) != null;
         } finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }

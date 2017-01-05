@@ -21,7 +21,8 @@ To build, run `mvn clean install`.
 | 0.2.x   | 0.2.0-SNAPSHOT | 0.7.0-incubating        |
 | 0.3.x   | 0.3.0-SNAPSHOT | 0.8.0-incubating        |
 | 0.4.x   | 0.4.0-SNAPSHOT | 0.9.0                   |
-| master  | 0.5.0-SNAPSHOT | 0.10.0-SNAPSHOT         |
+| 0.5.x   | 0.5.0-SNAPSHOT | 0.10.0                  |
+| master  | 0.6.0-SNAPSHOT | 0.11.0-SNAPSHOT         |
 
 
 ## Example

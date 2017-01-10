@@ -93,10 +93,7 @@ public interface ElbController extends AbstractNonProvisionedController {
     
     // http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/elasticloadbalancing/model/HealthCheck.html#setTarget(java.lang.String)
     ConfigKey<String> HEALTH_CHECK_TARGET = ConfigKeys.newStringConfigKey(
-            "aws.elb.healthCheck.target", "Specifies the instance being checked", "${instanceProtocol}:${instancePort?c}/");
-    
-    ConfigKey<Boolean> HEALTH_CHECK_ENABLED = ConfigKeys.newBooleanConfigKey(
-            "aws.elb.healthCheck.enabled", "Whether to do health checks for the instances", true);
+            "aws.elb.healthCheck.target", "The instance being checked. The protocol is either TCP, HTTP, HTTPS, or SSL. The range of valid ports is one (1) through 65535.", "HTTP:80/default");
     
     ConfigKey<Integer> HEALTH_CHECK_INTERVAL = ConfigKeys.newIntegerConfigKey(
             "aws.elb.healthCheck.interval", "Approximate interval, in seconds, between health checks of an individual instance (1 to 300)", 20);

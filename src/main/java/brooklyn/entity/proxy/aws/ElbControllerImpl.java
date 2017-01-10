@@ -34,18 +34,17 @@ import org.jclouds.ContextBuilder;
 import org.jclouds.aws.ec2.AWSEC2Api;
 import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.jclouds.elb.ELBApi;
+import org.jclouds.elb.domain.HealthCheck;
 import org.jclouds.elb.domain.Listener;
 import org.jclouds.elb.domain.LoadBalancer;
 import org.jclouds.elb.domain.Protocol;
 import org.jclouds.elb.domain.Scheme;
-import org.jclouds.elb.features.LoadBalancerApi;
 import org.jclouds.loadbalancer.LoadBalancerServiceContext;
 import org.jclouds.util.Closeables2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Predicates;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -58,6 +57,9 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     // TODO What should lifecycle be if effector deleteLoadBalancer is called?
 
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerImpl.class);
+
+    private ELBApi api;
+    private LoadBalancerServiceContext loadBalancerServiceContext;
 
     @Override
     protected void doStart(Collection<? extends Location> locations) {
@@ -112,22 +114,20 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             String elbName = checkLoadBalancerName(LOAD_BALANCER_NAME);
             Set<String> targetAddresses = super.getServerPoolAddresses();
 
-            LoadBalancerServiceContext loadBalancerServiceContext = null;
             try {
                 loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
-                ELBApi api = api(loadBalancerServiceContext);
 
                 Set<String> instances = ImmutableSet.copyOf(targetAddresses);
-                LoadBalancer loadBalancer = api.getLoadBalancerApi().get(elbName);
+                LoadBalancer loadBalancer = getELBApi().getLoadBalancerApi().get(elbName);
                 Set<String> oldInstances = ImmutableSet.copyOf(loadBalancer.getInstanceIds());
                 Set<String> removedInstances = Sets.difference(oldInstances, instances);
                 Set<String> addedInstances = Sets.difference(instances, oldInstances);
 
                 if (!addedInstances.isEmpty()) {
-                    api.getInstanceApi().registerInstancesWithLoadBalancer(addedInstances, elbName);
+                    getELBApi().getInstanceApi().registerInstancesWithLoadBalancer(addedInstances, elbName);
                 }
                 if (!removedInstances.isEmpty()) {
-                    api.getInstanceApi().registerInstancesWithLoadBalancer(removedInstances, elbName);
+                    getELBApi().getInstanceApi().registerInstancesWithLoadBalancer(removedInstances, elbName);
                 }
             } finally {
                 Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
@@ -184,22 +184,17 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         Collection<String> subnets = getConfig(LOAD_BALANCER_SUBNETS);
         String sslCertificateId = getConfig(SSL_CERTIFICATE_ID);
         Set<String> availabilityZoneNames = getAvailabilityZones(loc);
-        Boolean healthCheckEnabled = getConfig(HEALTH_CHECK_ENABLED);
-        Integer healthCheckInterval = getConfig(HEALTH_CHECK_INTERVAL);
-        Integer healthCheckTimeout = getConfig(HEALTH_CHECK_TIMEOUT);
-        Integer healthCheckHealthyThreshold = getConfig(HEALTH_CHECK_HEALTHY_THRESHOLD);
-        Integer healthCheckUnhealthyThreshold = getConfig(HEALTH_CHECK_UNHEALTHY_THRESHOLD);
 
         Group serverPool = getConfig(SERVER_POOL);
         LOG.debug("Creating new ELB '" + elbName + "', for server-pool " + serverPool);
 
         String identity = loc.getIdentity();
         String credential = loc.getCredential();
-        LoadBalancerServiceContext loadBalancerServiceContext = null;
+
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(identity, credential);
             // TODO would be cool to use the loadbalancer abstraction but it doesn't like an empty collection of nodes
-            ELBApi elbApi = api(loadBalancerServiceContext);
+            ELBApi elbApi = getELBApi();
             String elbDnsName = elbApi.getLoadBalancerApi()
                     .createListeningInAvailabilityZones(
                             elbName,
@@ -210,16 +205,49 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                                     .build(),
                             availabilityZoneNames);
 
+            configureHealthCheck();
+
             sensors().set(Attributes.HOSTNAME, elbDnsName);
         } finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
     }
 
+    private void configureHealthCheck() {
+        String elbName = getConfig(LOAD_BALANCER_NAME);
+        Integer healthCheckInterval = getConfig(HEALTH_CHECK_INTERVAL);
+        Integer healthCheckTimeout = getConfig(HEALTH_CHECK_TIMEOUT);
+        Integer healthCheckHealthyThreshold = getConfig(HEALTH_CHECK_HEALTHY_THRESHOLD);
+        Integer healthCheckUnhealthyThreshold = getConfig(HEALTH_CHECK_UNHEALTHY_THRESHOLD);
+        String healthCheckTarget = getConfig(HEALTH_CHECK_TARGET);
+
+        final LoadBalancer loadBalancer = getELBApi().getLoadBalancerApi().get(elbName);
+        final HealthCheck healthCheck = loadBalancer.getHealthCheck();
+
+        final HealthCheck healthCheckConfig = HealthCheck.builder()
+                .healthyThreshold(healthCheckHealthyThreshold != null ? healthCheckHealthyThreshold : healthCheck.getHealthyThreshold())
+                .unhealthyThreshold(healthCheckUnhealthyThreshold != null ? healthCheckUnhealthyThreshold : healthCheck.getUnhealthyThreshold())
+                .interval(healthCheckInterval != null ? healthCheckInterval : healthCheck.getInterval())
+                .target(healthCheckTarget != null ? healthCheckTarget : healthCheck.getTarget())
+                .timeout(healthCheckTimeout != null ? healthCheckTimeout : healthCheck.getTimeout())
+                .build();
+
+        getELBApi().getHealthCheckApi().configureHealthCheck(elbName, healthCheckConfig);
+    }
+
     private LoadBalancerServiceContext newLoadBalancerServiceContext(String identity, String credential) {
-        return ContextBuilder.newBuilder("aws-elb")
+        if(loadBalancerServiceContext != null){
+            return loadBalancerServiceContext;
+        }
+        return ContextBuilder.newBuilder("elb")
                 .credentials(identity, credential)
                 .buildView(typeToken(LoadBalancerServiceContext.class));
+    }
+    LoadBalancerServiceContext getLoadBalancerServiceConext(){
+        return loadBalancerServiceContext;
+    }
+    void setLoadBalancerServiceContext(LoadBalancerServiceContext loadBalancerServiceContext){
+        this.loadBalancerServiceContext = loadBalancerServiceContext;
     }
 
     protected void reinitLoadBalancer() {
@@ -235,20 +263,13 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         Set<String> subnets = (getConfig(LOAD_BALANCER_SUBNETS) != null) ? ImmutableSet.copyOf(getConfig(LOAD_BALANCER_SUBNETS)) : ImmutableSet.<String>of();
         String sslCertificateId = getConfig(SSL_CERTIFICATE_ID);
         Set<String> availabilityZoneNames = getAvailabilityZones(loc);
-        Boolean healthCheckEnabled = getConfig(HEALTH_CHECK_ENABLED);
-        Integer healthCheckInterval = getConfig(HEALTH_CHECK_INTERVAL);
-        Integer healthCheckTimeout = getConfig(HEALTH_CHECK_TIMEOUT);
-        Integer healthCheckHealthyThreshold = getConfig(HEALTH_CHECK_HEALTHY_THRESHOLD);
-        Integer healthCheckUnhealthyThreshold = getConfig(HEALTH_CHECK_UNHEALTHY_THRESHOLD);
 
         LOG.debug("Re-initialising existing ELB: " + elbName);
 
-        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
-            ELBApi api = api(loadBalancerServiceContext);
 
-            LoadBalancer loadBalancer = api.getLoadBalancerApi().get(elbName);
+            LoadBalancer loadBalancer = getELBApi().getLoadBalancerApi().get(elbName);
             Scheme oldScheme = loadBalancer.getScheme().orNull();
             if (oldScheme != null && !oldScheme.value().equals(elbScheme)) {
                 LOG.warn("Existing ELB {} scheme ({}) is different from configuration ({}); cannot modify; continuing",
@@ -306,40 +327,11 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             if (Strings.isNonBlank(sslCertificateId)) listener.toBuilder().SSLCertificateId(sslCertificateId);
 
             if(securityGroups != null) {
-                api.getLoadBalancerApi().createListeningInSubnetsAssignedToSecurityGroups(elbName, subnets, securityGroups);
+                getELBApi().getLoadBalancerApi().createListeningInSubnetsAssignedToSecurityGroups(elbName, subnets, securityGroups);
             }
 
-            // Reset the health check
-            /*
-            HealthCheck oldHealthCheck = loadBalancer.getHealthCheck();
-            if (healthCheckEnabled != null && healthCheckEnabled) {
-                // TODO remove duplication from createLoadBalancer; would require passing in a huge amount of config
-                // as parameters, or the shared method reading the config itself
-                String targetTemplate = getConfig(HEALTH_CHECK_TARGET);
-                Map<String, Object> substitutions = ImmutableMap.<String, Object>builder()
-                        .put("instancePort", instancePort)
-                        .put("instanceProtocol", instanceProtocol)
-                        .build();
-                String target = TemplateProcessor.processTemplateContents(targetTemplate, substitutions);
+            configureHealthCheck();
 
-                HealthCheck healthCheck = HealthCheck.builder()
-                        .target(target)
-                        .interval(healthCheckInterval)
-                        .timeout(healthCheckTimeout)
-                        .healthyThreshold(healthCheckHealthyThreshold)
-                        .unhealthyThreshold(healthCheckUnhealthyThreshold)
-                        .build();
-
-                api.getHealthCheckApi().configureHealthCheck(healthCheck, elbName);
-            } else {
-                // TODO Not removing old health check because passing in null for ConfigureHealthCheckRequest gives:
-                //      Caused by: AmazonServiceException: Status Code: 400, AWS Service: AmazonElasticLoadBalancing, AWS Request ID: 47a2b87d-30ef-11e3-bd82-6571b2f68bd5, AWS Error Code: ValidationError, AWS Error Message: 1 validation error detected: Value null at 'healthCheck' failed to satisfy constraint: Member must not be null
-                if (oldHealthCheck != null) {
-                    LOG.warn("Existing ELB {} (in {}) health check ({}) not removed (no new health check wanted; continuing",
-                            new Object[] {elbName, this, oldHealthCheck});
-                }
-            }
-            */
 
             sensors().set(Attributes.HOSTNAME, loadBalancer.getDnsName());
             } finally {
@@ -370,10 +362,9 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     protected boolean doesLoadBalancerExist(String elbName) {
         JcloudsLocation loc = getLocation();
 
-        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
-            return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(loc.getRegion()+"/"+elbName) != null;
+            return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(elbName) != null;
         } finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
@@ -383,7 +374,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         JcloudsLocation loc = getLocation();
         LOG.debug("Deleting ELB: " + elbName);
 
-        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
             loadBalancerServiceContext.getLoadBalancerService().destroyLoadBalancer(elbName);
@@ -437,8 +427,11 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         // see #reload(); no prep required in reconfigureService
     }
 
-    private ELBApi api(LoadBalancerServiceContext loadBalancerServiceContext) {
-        return loadBalancerServiceContext.unwrapApi(ELBApi.class);
+    ELBApi getELBApi() {
+        if(api != null){
+            return api;
+        }
+        return getLoadBalancerServiceConext().unwrapApi(ELBApi.class);
     }
 
     @Override
@@ -477,11 +470,14 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     protected JcloudsLocation getLocation() {
         JcloudsLocation result = getAttribute(JCLOUDS_LOCATION);
-        checkNotNull(result, "JcloudsLocation not set - was ELB started, or has it been stopped?");
+        //checkNotNull(result, "JcloudsLocation not set - was ELB started, or has it been stopped?");
         return result;
     }
 
     protected JcloudsLocation inferLocation(@Nullable Collection<? extends Location> locations) {
+        if(getLocation() != null){
+            return getLocation();
+        }
         if (locations==null || locations.isEmpty()) locations = getLocations();
         locations = Locations.getLocationsCheckingAncestors(locations, this);
 

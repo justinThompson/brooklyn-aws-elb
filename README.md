@@ -33,6 +33,7 @@ of OSGi):
     BROOKLYN_HOME=~/repos/apache/brooklyn/brooklyn-dist/dist/target/brooklyn-dist/brooklyn/
     BROOKLYN_AWS_ELB_REPO=~/repos/cloudsoft/brooklyn-aws-elb
     MAVEN_REPO=~/.m2/repository
+
     AWS_SDK_VERSION=1.10.53
     BROOKLYN_AWS_ELB_VERSION=0.5.0-SNAPSHOT
     

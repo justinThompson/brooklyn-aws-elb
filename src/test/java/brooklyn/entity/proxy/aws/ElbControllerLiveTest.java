@@ -1,17 +1,13 @@
 package brooklyn.entity.proxy.aws;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotEquals;
-import static org.testng.Assert.assertNotNull;
-
-import java.io.File;
-import java.net.URI;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-
+import com.google.common.base.Charsets;
+import com.google.common.base.Joiner;
+import com.google.common.base.Predicate;
+import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Iterables;
+import com.google.common.io.Files;
 import org.apache.brooklyn.api.entity.EntitySpec;
 import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.api.location.LocationSpec;
@@ -28,7 +24,9 @@ import org.apache.brooklyn.entity.group.DynamicCluster;
 import org.apache.brooklyn.entity.software.base.EmptySoftwareProcess;
 import org.apache.brooklyn.entity.software.base.SoftwareProcess;
 import org.apache.brooklyn.entity.webapp.tomcat.Tomcat8Server;
+import org.apache.brooklyn.location.jclouds.JcloudsLocation;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
+import org.apache.brooklyn.location.jclouds.networking.SecurityGroupEditor;
 import org.apache.brooklyn.location.ssh.SshMachineLocation;
 import org.apache.brooklyn.test.Asserts;
 import org.apache.brooklyn.util.exceptions.Exceptions;
@@ -36,19 +34,31 @@ import org.apache.brooklyn.util.http.HttpAsserts;
 import org.apache.brooklyn.util.net.Networking;
 import org.apache.brooklyn.util.ssh.BashCommands;
 import org.apache.brooklyn.util.text.Identifiers;
+import org.jclouds.compute.domain.SecurityGroup;
+import org.jclouds.compute.extensions.SecurityGroupExtension;
+import org.jclouds.domain.LocationBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import com.google.common.base.Charsets;
-import com.google.common.base.Joiner;
-import com.google.common.base.Predicates;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Iterables;
-import com.google.common.io.Files;
+import javax.annotation.Nullable;
+import java.io.File;
+import java.net.URI;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.brooklyn.core.location.LocationConfigKeys.CLOUD_REGION_ID;
+import static org.apache.brooklyn.core.location.LocationConfigKeys.ISO_3166;
+import static org.jclouds.domain.LocationScope.REGION;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertNotNull;
 
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
@@ -67,7 +77,6 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final List<String> AVAILABILITY_ZONES = ImmutableList.of("us-east-1b", "us-east-1a");
     public static final String LOCATION_SPEC = PROVIDER + (REGION_NAME == null ? "" : ":" + REGION_NAME);
     public static final String LOCATION_AZ_SPEC = PROVIDER + ":" + AVAILABILITY_ZONES.get(0);
-    public static final String TINY_HARDWARE_ID = "t1.micro";
     public static final String SMALL_HARDWARE_ID = "m1.small";
 
     private static final URI warUri = URI.create("https://repo1.maven.org/maven2/org/apache/brooklyn/example/brooklyn-example-hello-world-webapp/0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war");
@@ -84,7 +93,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     private ElbController elb;
 
     private SshMachineLocation localMachine;
-    
+
     @BeforeMethod(alwaysRun=true)
     @Override
     public void setUp() throws Exception {
@@ -107,7 +116,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         loc = mgmt.getLocationRegistry().resolve(LOCATION_SPEC, flags);
         locAZ = mgmt.getLocationRegistry().resolve(LOCATION_AZ_SPEC, flags);
         locs = ImmutableList.of(loc);
-        
+
         localMachine = mgmt.getLocationManager().createLocation(LocationSpec.create(SshMachineLocation.class)
                 .configure("address", Networking.getLocalHost()));
     }
@@ -131,10 +140,12 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     @Test(groups="Live")
     public void testCreateLoadBalancer() throws Exception {
-        elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
+        elb = app.createAndManageChild(
+            EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
-                .configure(ElbController.INSTANCE_PORT, 8080));
+                .configure(ElbController.INSTANCE_PORT, 8080)
+        );
         
         app.addLocations(locs);
         app.start(ImmutableList.<Location>of());
@@ -147,9 +158,11 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         EntityAsserts.assertAttributeEventually(elb, ElbController.VPC_ID, Predicates.notNull());
         EntityAsserts.assertAttributeEventually(elb, ElbController.CANONICAL_HOSTED_ZONE_ID, Predicates.notNull());
         EntityAsserts.assertAttributeEventually(elb, ElbController.CANONICAL_HOSTED_ZONE_NAME, Predicates.notNull());
+
         Entities.dumpInfo(elb);
     }
-    
+
+
     @Test(groups="Live")
     public void testRebindLoadBalancer() throws Exception {
         String elbName = "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8);

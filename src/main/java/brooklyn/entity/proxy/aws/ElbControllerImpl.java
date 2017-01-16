@@ -31,11 +31,10 @@ import org.apache.brooklyn.util.exceptions.Exceptions;
 import org.apache.brooklyn.util.guava.Maybe;
 import org.apache.brooklyn.util.text.Strings;
 import org.jclouds.ContextBuilder;
-import org.jclouds.aws.ec2.AWSEC2Api;
-import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.jclouds.elb.ELBApi;
 import org.jclouds.elb.domain.HealthCheck;
 import org.jclouds.elb.domain.Listener;
+import org.jclouds.elb.domain.ListenerWithPolicies;
 import org.jclouds.elb.domain.LoadBalancer;
 import org.jclouds.elb.domain.Protocol;
 import org.jclouds.elb.domain.Scheme;
@@ -45,6 +44,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
@@ -58,7 +58,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerImpl.class);
 
-    private ELBApi api;
+    private ELBApi elbApi;
     private LoadBalancerServiceContext loadBalancerServiceContext;
 
     @Override
@@ -177,13 +177,13 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
         int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
         int instancePort = getRequiredConfig(INSTANCE_PORT);
-        String instanceProtocol = getRequiredConfig(INSTANCE_PROTOCOL);
+        Protocol instanceProtocol = Protocol.valueOf(getRequiredConfig(INSTANCE_PROTOCOL));
         String elbScheme = getConfig(LOAD_BALANCER_SCHEME);
         String loadBalancerProtocol = getRequiredConfig(LOAD_BALANCER_PROTOCOL);
         Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
         Collection<String> subnets = getConfig(LOAD_BALANCER_SUBNETS);
         String sslCertificateId = getConfig(SSL_CERTIFICATE_ID);
-        Set<String> availabilityZoneNames = getAvailabilityZones(loc);
+        Collection<String> availabilityZoneNames = getConfig(AVAILABILITY_ZONES);
 
         Group serverPool = getConfig(SERVER_POOL);
         LOG.debug("Creating new ELB '" + elbName + "', for server-pool " + serverPool);
@@ -194,16 +194,19 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(identity, credential);
             // TODO would be cool to use the loadbalancer abstraction but it doesn't like an empty collection of nodes
-            ELBApi elbApi = getELBApi();
-            String elbDnsName = elbApi.getLoadBalancerApi()
-                    .createListeningInAvailabilityZones(
-                            elbName,
-                            Listener.builder()
-                                    .protocol(Protocol.HTTP)
-                                    .instancePort(instancePort)
-                                    .port(loadBalancerPort)
-                                    .build(),
-                            availabilityZoneNames);
+            String elbDnsName = "";
+            final Listener listener = Listener.builder()
+                    .protocol(instanceProtocol)
+                    .instancePort(instancePort)
+                    .port(loadBalancerPort)
+                    .build();
+
+            if(availabilityZoneNames != null && availabilityZoneNames.size() > 0 ){
+                elbDnsName = getELBApi().getLoadBalancerApi().createListeningInAvailabilityZones(elbName, ImmutableSet.<Listener>of(listener), availabilityZoneNames);
+            }
+            else if(subnets != null && !subnets.isEmpty()) {
+                elbDnsName = getELBApi().getLoadBalancerApi().createListeningInSubnets(elbName, ImmutableSet.of(listener), subnets);
+            }
 
             configureHealthCheck();
 
@@ -239,30 +242,19 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         if(loadBalancerServiceContext != null){
             return loadBalancerServiceContext;
         }
-        return ContextBuilder.newBuilder("elb")
+        return ContextBuilder.newBuilder("aws-elb")
                 .credentials(identity, credential)
                 .buildView(typeToken(LoadBalancerServiceContext.class));
     }
     LoadBalancerServiceContext getLoadBalancerServiceConext(){
         return loadBalancerServiceContext;
     }
-    void setLoadBalancerServiceContext(LoadBalancerServiceContext loadBalancerServiceContext){
-        this.loadBalancerServiceContext = loadBalancerServiceContext;
-    }
 
     protected void reinitLoadBalancer() {
         JcloudsLocation loc = getLocation();
         String elbName = checkNotNull(checkLoadBalancerName(LOAD_BALANCER_NAME), LOAD_BALANCER_NAME.getName());
 
-        int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
-        int instancePort = getRequiredConfig(INSTANCE_PORT);
-        String instanceProtocol = getRequiredConfig(INSTANCE_PROTOCOL);
         String elbScheme = getConfig(LOAD_BALANCER_SCHEME);
-        String loadBalancerProtocol = getRequiredConfig(LOAD_BALANCER_PROTOCOL);
-        Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
-        Set<String> subnets = (getConfig(LOAD_BALANCER_SUBNETS) != null) ? ImmutableSet.copyOf(getConfig(LOAD_BALANCER_SUBNETS)) : ImmutableSet.<String>of();
-        String sslCertificateId = getConfig(SSL_CERTIFICATE_ID);
-        Set<String> availabilityZoneNames = getAvailabilityZones(loc);
 
         LOG.debug("Re-initialising existing ELB: " + elbName);
 
@@ -276,69 +268,128 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                         new Object[] {elbName, oldScheme, elbScheme});
             }
 
-            /*
-            // Set the availability zones
-            Set<String> oldAvailabilityZoneNames = loadBalancer.getAvailabilityZones();
-            Set<String> oldAvailabilityZoneNamesSet = ImmutableSet.copyOf(oldAvailabilityZoneNames);
-            Set<String> removedAvailabilityZoneNames = Sets.difference(oldAvailabilityZoneNamesSet, availabilityZoneNames);
-            Set<String> addedAvailabilityZoneNames = Sets.difference(availabilityZoneNames, oldAvailabilityZoneNamesSet);
-            if (!addedAvailabilityZoneNames.isEmpty()) {
-                api.getAvailabilityZoneApi().addAvailabilityZonesToLoadBalancer(addedAvailabilityZoneNames, elbName);
-            }
-            if (!removedAvailabilityZoneNames.isEmpty()) {
-                api.getAvailabilityZoneApi().removeAvailabilityZonesFromLoadBalancer(addedAvailabilityZoneNames, elbName);
-            }
+            configureSecurityGroups(elbName);
 
-            // Set the security groups
-            // TODO Not changing security groups if config is empty, because calling applySecurityGroups with an empty list causes:
-            //      Caused by: AmazonServiceException: Status Code: 400, AWS Service: AmazonElasticLoadBalancing, AWS Request ID: f0661b5b-30ee-11e3-bd02-232415f6851f, AWS Error Code: ValidationError, AWS Error Message: 1 validation error detected: Value null at 'securityGroups' failed to satisfy constraint: Member must not be null
-            // if (securityGroups != null && securityGroups.size() > 0) {
-            //    api.*.applySecurityGroupsToLoadBalancer(securityGroups != null ? securityGroups : ImmutableList.<String>of(), elbName);
-            //}
+            configureAvailabilityZones(elbName, loadBalancer);
 
-            // Set the subnets
-            // Set<String> oldSubnets = ImmutableSet.copyOf(loadBalancer.getSubnets());
-            // Set<String> removedSubnets = Sets.difference(oldSubnets, subnets);
-            // Set<String> addedSubnets = Sets.difference(subnets, oldSubnets);
-            //if (!addedSubnets.isEmpty()) {
-            //    api.getSubnetApi().attachLoadBalancerToSubnets(addedSubnets, elbName);
-            //}
-            //if (!removedSubnets.isEmpty()) {
-            //    api.getSubnetApi().detachLoadBalancerFromSubnets(removedSubnets, elbName);
-            //}
-            // Remove any old listeners, and add the new one
-
-            Set<ListenerWithPolicies> listenerWithPolicies = loadBalancer.getListeners();
-            Set<Integer> listenerPorts = Sets.newHashSet();
-            for (ListenerWithPolicies listenerWithPolicy : listenerWithPolicies) {
-                listenerPorts.add(listenerWithPolicy.getPort());
-            }
-            if (listenerPorts.size() > 0) {
-                api.getListenerApi().deleteListeners(deleteListeners, elbName);
-            }
-            */
-
-            Listener listener = Listener.builder()
-                    .protocol(Protocol.valueOf(loadBalancerProtocol))
-                    .instancePort(instancePort)
-                    .instanceProtocol(Protocol.valueOf(instanceProtocol))
-                    .port(loadBalancerPort)
-                    .build();
-            if (Strings.isNonBlank(sslCertificateId)) listener.toBuilder().SSLCertificateId(sslCertificateId);
-
-            if(securityGroups != null) {
-                getELBApi().getLoadBalancerApi().createListeningInSubnetsAssignedToSecurityGroups(elbName, subnets, securityGroups);
-            }
+            configureSubnets(elbName, loadBalancer);
 
             configureHealthCheck();
 
-
             sensors().set(Attributes.HOSTNAME, loadBalancer.getDnsName());
-            } finally {
+            }
+        finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
 
     }
+    private void configureSecurityGroups(String elbName){
+        final Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
+
+        if (securityGroups != null && securityGroups.size() > 0) {
+            getELBApi().getLoadBalancerApi().applySecurityGroupsToLoadBalancer(elbName, securityGroups != null ? securityGroups : ImmutableList.<String>of());
+        }
+
+    }
+    private void configureAvailabilityZones(String elbName, LoadBalancer loadBalancer) {
+        Set<String> availabilityZoneNames = (getConfig(AVAILABILITY_ZONES) != null) ? ImmutableSet.copyOf(getConfig(AVAILABILITY_ZONES)) : ImmutableSet.<String>of();
+
+        if (availabilityZoneNames != null && availabilityZoneNames.size() > 0) {
+
+            // Set the availability zones
+            Set<String> oldAvailabilityZoneNames = loadBalancer.getAvailabilityZones();
+            Set<String> oldAvailabilityZoneNamesSet = ImmutableSet.copyOf(oldAvailabilityZoneNames);
+            Set<String> removedAvailabilityZoneNames = Sets.difference(oldAvailabilityZoneNamesSet, ImmutableSet.copyOf(availabilityZoneNames));
+            Set<String> addedAvailabilityZoneNames = Sets.difference(ImmutableSet.copyOf(availabilityZoneNames), oldAvailabilityZoneNamesSet);
+            if (!addedAvailabilityZoneNames.isEmpty()) {
+                getELBApi().getAvailabilityZoneApi().addAvailabilityZonesToLoadBalancer(addedAvailabilityZoneNames, elbName);
+            }
+            if (!removedAvailabilityZoneNames.isEmpty()) {
+                getELBApi().getAvailabilityZoneApi().removeAvailabilityZonesFromLoadBalancer(addedAvailabilityZoneNames, elbName);
+            }
+
+            configureListenersInAvailabilityZone(elbName, loadBalancer, availabilityZoneNames);
+
+        }
+    }
+
+    private void configureSubnets(String elbName, LoadBalancer loadBalancer) {
+        Set<String> subnets = (getConfig(LOAD_BALANCER_SUBNETS) != null) ? ImmutableSet.copyOf(getConfig(LOAD_BALANCER_SUBNETS)) : ImmutableSet.<String>of();
+
+        if(subnets != null && subnets.size() > 0) {
+            Set<String> oldSubnets = ImmutableSet.copyOf(loadBalancer.getSubnets());
+            Set<String> removedSubnets = Sets.difference(oldSubnets, subnets);
+            Set<String> addedSubnets = Sets.difference(subnets, oldSubnets);
+            if (!addedSubnets.isEmpty()) {
+                getELBApi().getSubnetApi().attachLoadBalancerToSubnets(elbName, addedSubnets);
+            }
+            if (!removedSubnets.isEmpty()) {
+                getELBApi().getSubnetApi().detachLoadBalancerFromSubnets(elbName, removedSubnets);
+            }
+
+            configureListenersInSubnet(elbName, loadBalancer, subnets);
+
+        }
+    }
+
+    private void configureListenersInSubnet(String elbName, LoadBalancer loadBalancer, Set<String> subnets) {
+        // TODO work out what needs to be done here, create listener in subnet or availability zone
+        int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
+        int instancePort = getRequiredConfig(INSTANCE_PORT);
+        String instanceProtocol = getRequiredConfig(INSTANCE_PROTOCOL);
+        String loadBalancerProtocol = getRequiredConfig(LOAD_BALANCER_PROTOCOL);
+        Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
+
+        Set<ListenerWithPolicies> listenerWithPolicies = loadBalancer.getListeners();
+        Set<Integer> listenerPorts = Sets.newHashSet();
+        for (ListenerWithPolicies listenerWithPolicy : listenerWithPolicies) {
+            listenerPorts.add(listenerWithPolicy.getPort());
+        }
+        if (!listenerPorts.isEmpty()) {
+            //todo workout how to establish the delta
+            //getELBApi().getLoadBalancerApi().deleteLoadBalancerListeners(elbName, listenerPorts);
+        }
+
+         Listener listener = Listener.builder()
+                .protocol(Protocol.valueOf(loadBalancerProtocol))
+                .instancePort(instancePort)
+                .instanceProtocol(Protocol.valueOf(instanceProtocol))
+                .port(loadBalancerPort)
+                .build();
+
+        if(securityGroups != null && !securityGroups.isEmpty()) {
+            getELBApi().getLoadBalancerApi().createListeningInSubnetsAssignedToSecurityGroups(elbName, subnets, ImmutableSet.of(listener),securityGroups);
+        }
+
+
+    }
+    private void configureListenersInAvailabilityZone(String elbName, LoadBalancer loadBalancer, Set<String> availabilityZoneNames) {
+        // TODO work out what needs to be done here, create listener in subnet or availability zone
+        int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
+        int instancePort = getRequiredConfig(INSTANCE_PORT);
+        String instanceProtocol = getRequiredConfig(INSTANCE_PROTOCOL);
+        String loadBalancerProtocol = getRequiredConfig(LOAD_BALANCER_PROTOCOL);
+
+        Set<ListenerWithPolicies> listenerWithPolicies = loadBalancer.getListeners();
+        Set<Integer> listenerPorts = Sets.newHashSet();
+        for (ListenerWithPolicies listenerWithPolicy : listenerWithPolicies) {
+            listenerPorts.add(listenerWithPolicy.getPort());
+        }
+        if (!listenerPorts.isEmpty()) {
+            //todo workout how to establish the delta
+            //getELBApi().getLoadBalancerApi().deleteLoadBalancerListeners(elbName, listenerPorts);
+        }
+        Listener listener = Listener.builder()
+            .protocol(Protocol.valueOf(loadBalancerProtocol))
+            .instancePort(instancePort)
+            .instanceProtocol(Protocol.valueOf(instanceProtocol))
+            .port(loadBalancerPort)
+            .build();
+
+        getELBApi().getLoadBalancerApi().createListeningInAvailabilityZones(elbName, ImmutableSet.<Listener>of(listener), availabilityZoneNames);
+
+    }
+
 
     @Override
     public void deleteLoadBalancer() {
@@ -382,8 +433,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
     }
 
-    private Set<String> getAvailabilityZones(JcloudsLocation loc) {
-        Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
+    /*private Set<String> getAvailabilityZones(JcloudsLocation loc) {
+       Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
         if (availabilityZones == null) {
             String locName = loc.getRegion();
             if (isAvailabilityZone(locName)) {
@@ -401,7 +452,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             }
         }
         return ImmutableSet.copyOf(availabilityZones);
-    }
+    } */
 
     @Override
     protected String inferProtocol() {
@@ -428,10 +479,11 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     }
 
     ELBApi getELBApi() {
-        if(api != null){
-            return api;
+        if(elbApi != null){
+            return elbApi;
         }
-        return getLoadBalancerServiceConext().unwrapApi(ELBApi.class);
+        elbApi = getLoadBalancerServiceConext().unwrapApi(ELBApi.class);
+        return elbApi;
     }
 
     @Override

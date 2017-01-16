@@ -52,6 +52,7 @@ import com.google.common.collect.Iterables;
 
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
+
     // TODO Add more tests
     // - other protocols, such as HTTPS, and TCP using `nc`
     // - removing nodes cleanly, to ensure they are removed from the pool
@@ -65,6 +66,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final String PROVIDER = "aws-ec2";
     public static final String REGION_NAME = "us-east-1";
     public static final List<String> AVAILABILITY_ZONES = ImmutableList.of("us-east-1b", "us-east-1a");
+    public static final List<String> SUBNETS = ImmutableList.of("us-east-1b", "us-east-1a");
     public static final String LOCATION_SPEC = PROVIDER + (REGION_NAME == null ? "" : ":" + REGION_NAME);
     public static final String LOCATION_AZ_SPEC = PROVIDER + ":" + AVAILABILITY_ZONES.get(0);
     public static final String TINY_HARDWARE_ID = "t1.micro";
@@ -72,11 +74,13 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final int TCP_PORT = 1234;
 
     private static final URI warUri = URI.create("https://repo1.maven.org/maven2/org/apache/brooklyn/example/brooklyn-example-hello-world-webapp/0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war");
-    public static final String HEALTH_CHECK_TARGET = "HTTP:81/";
+    public static final String HEALTH_CHECK_TARGET_HTTP = "HTTP:81/";
+    public static final String HEALTH_CHECK_TARGET_TCP = "TCP:81/";
     public static final int HEALTH_CHECK_UNHEALTH_THRESHOLD = 10;
     public static final int HEALTH_CHECK_HEALTH_THRESHOLD = 10;
     public static final int HEALTH_CHECK_INTERVAL = 10;
     public static final int HEALTH_CHECK_TIMEOUT = 3;
+    private final String TCP_PROTOCOL = "TCP";
 
     // Image: {id=us-east-1/ami-7d7bfc14, providerId=ami-7d7bfc14, name=RightImage_CentOS_6.3_x64_v5.8.8.5, location={scope=REGION, id=us-east-1, description=us-east-1, parent=aws-ec2, iso3166Codes=[US-VA]}, os={family=centos, arch=paravirtual, version=6.0, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, is64Bit=true}, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, version=5.8.8.5, status=AVAILABLE[available], loginUser=root, userMetadata={owner=411009282317, rootDeviceType=instance-store, virtualizationType=paravirtual, hypervisor=xen}}
     //runTest(ImmutableMap.of("imageId", "us-east-1/ami-7d7bfc14", "hardwareId", SMALL_HARDWARE_ID));
@@ -174,11 +178,11 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.BIND_TO_EXISTING, true)
-                .configure(ElbController.HEALTH_CHECK_TARGET, "HTTP:81/")
+                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_HTTP)
                 .configure(ElbController.INSTANCE_PORT, 1234)
-                .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
+                .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, 1235)
-                .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP"));
+                .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL));
 
         elb3.start(locs);
         assertEquals(elb3.getAttribute(ElbController.HOSTNAME), origHostname);
@@ -235,16 +239,17 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
         DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
                 .configure(DynamicCluster.INITIAL_SIZE, 1)
+                .configure(DynamicCluster.ENABLE_AVAILABILITY_ZONES, true)
+                .configure(DynamicCluster.AVAILABILITY_ZONE_NAMES, AVAILABILITY_ZONES)
                 .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(Tomcat8Server.class)
                         .configure("war", warUri.toString())
-                        .configure(DynamicCluster.AVAILABILITY_ZONE_NAMES, AVAILABILITY_ZONES)
                         .configure(Tomcat8Server.HTTP_PORT, PortRanges.fromInteger(8080))));
 
 
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
-                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("httpsTargets"))
+                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("httpTargets"))
                 .configure(ElbController.LOAD_BALANCER_PORT, 80)
                 .configure(ElbController.INSTANCE_PORT, 8080));
 
@@ -285,11 +290,11 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
                 .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("tcpTargetsAndEmptyCluster"))
-                .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
-                .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
+                .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, 1234)
                 .configure(ElbController.INSTANCE_PORT, 1235)
-                .configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}"));
+                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_HTTP));
 
         app.start(ImmutableList.<Location>of(locAZ));
         final String elbHostname = elb.getAttribute(ElbController.HOSTNAME);
@@ -314,11 +319,11 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.SERVER_POOL, cluster)
                 .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("tcpTargets"))
-                .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
-                .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
+                .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
                 .configure(ElbController.INSTANCE_PORT, 1235)
-                .configure(ElbController.HEALTH_CHECK_TARGET, "${instanceProtocol}:${instancePort?c}")
+                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_TCP)
                 .configure(ElbController.HEALTH_CHECK_UNHEALTHY_THRESHOLD, 10));
 
 
@@ -369,19 +374,21 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     }
     @Test(groups="Live")
     public void testHealthCheck() throws Exception {
-        String elbName = generateElbName("rebind");
+        String elbName = generateElbName("healthCheck");
         ElbControllerImpl elbImpl = (ElbControllerImpl) Entities.deproxy(app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
-                .configure(ElbController.LOAD_BALANCER_PROTOCOL, "TCP")
-                .configure(ElbController.INSTANCE_PROTOCOL, "TCP")
+                .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
                 .configure(ElbController.INSTANCE_PORT, 1235)
-                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET)
+                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_HTTP)
                 .configure(ElbController.HEALTH_CHECK_HEALTHY_THRESHOLD, HEALTH_CHECK_HEALTH_THRESHOLD)
                 .configure(ElbController.HEALTH_CHECK_UNHEALTHY_THRESHOLD, HEALTH_CHECK_UNHEALTH_THRESHOLD)
                 .configure(ElbController.HEALTH_CHECK_INTERVAL, HEALTH_CHECK_INTERVAL)
                 .configure(ElbController.HEALTH_CHECK_TIMEOUT, HEALTH_CHECK_TIMEOUT)));
+
+        elb = elbImpl;
 
         app.addLocations(locs);
 
@@ -390,12 +397,56 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
         final HealthCheck healthCheck = loadBalancer.getHealthCheck();
         assertEquals(loadBalancer.getName(), elbName);
-        assertEquals(healthCheck.getTarget(), HEALTH_CHECK_TARGET);
+        assertEquals(healthCheck.getTarget(), HEALTH_CHECK_TARGET_HTTP);
         assertEquals(healthCheck.getHealthyThreshold(), HEALTH_CHECK_UNHEALTH_THRESHOLD);
         assertEquals(healthCheck.getUnhealthyThreshold(), HEALTH_CHECK_UNHEALTH_THRESHOLD);
         assertEquals(healthCheck.getInterval(), HEALTH_CHECK_INTERVAL);
         assertEquals(healthCheck.getTimeout(), HEALTH_CHECK_TIMEOUT);
 
-        // and add a test for rebind
+    }
+
+    @Test(groups="Live")
+    public void testAvailabilityZones() throws Exception {
+        String elbName = generateElbName("availZones");
+        ElbControllerImpl elbImpl = (ElbControllerImpl) Entities.deproxy(app.createAndManageChild(EntitySpec.create(ElbController.class)
+                .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
+                .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
+                .configure(ElbController.INSTANCE_PORT, 1235)));
+
+        elb = elbImpl;
+
+        app.addLocations(locs);
+
+        app.start(locs);
+
+        final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
+        assertEquals(loadBalancer.getName(), elbName);
+        assertTrue(loadBalancer.getAvailabilityZones().containsAll(AVAILABILITY_ZONES));
+    }
+
+    @Test(groups={"Live", "WIP"})
+    public void testSubnets() throws Exception {
+        //TODO setup the subnets first
+        String elbName = generateElbName("subnets");
+        ElbControllerImpl elbImpl = (ElbControllerImpl) Entities.deproxy(app.createAndManageChild(EntitySpec.create(ElbController.class)
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, SUBNETS)
+                .configure(ElbController.LOAD_BALANCER_NAME, elbName)
+                .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
+                .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
+                .configure(ElbController.INSTANCE_PORT, 1235)));
+
+        elb = elbImpl;
+
+        app.addLocations(locs);
+
+        app.start(locs);
+
+        final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
+        assertEquals(loadBalancer.getName(), elbName);
+        assertTrue(loadBalancer.getAvailabilityZones().containsAll(SUBNETS));
     }
 }

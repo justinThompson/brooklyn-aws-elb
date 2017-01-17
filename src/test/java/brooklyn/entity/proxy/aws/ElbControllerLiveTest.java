@@ -448,5 +448,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
         assertEquals(loadBalancer.getName(), elbName);
         assertTrue(loadBalancer.getAvailabilityZones().containsAll(SUBNETS));
+        assertTrue(loadBalancer.getAvailabilityZones().isEmpty());
+
     }
 }

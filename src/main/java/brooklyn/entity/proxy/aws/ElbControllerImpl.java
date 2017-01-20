@@ -14,7 +14,6 @@ import org.apache.brooklyn.api.entity.Group;
 import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.api.sensor.AttributeSensor;
 import org.apache.brooklyn.config.ConfigKey;
-import org.apache.brooklyn.config.ConfigKey.HasConfigKey;
 import org.apache.brooklyn.core.entity.Attributes;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic;
@@ -44,22 +43,16 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Predicates;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 
 public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl implements ElbController {
 
-    // TODO Add unit tests for rebind
-
     // TODO Use the SoftwareProcess's approach of expectedState and serviceUpIndicators
     // TODO What should lifecycle be if effector deleteLoadBalancer is called?
 
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerImpl.class);
-
-    private ELBApi elbApi;
-    private LoadBalancerServiceContext loadBalancerServiceContext;
 
     @Override
     protected void doStart(Collection<? extends Location> locations) {
@@ -108,26 +101,28 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             if (loc == null) {
                 // TODO Guard this better, in case of concurrent calls?
                 // TODO guard with lifecycle state, so will do this when starting?
-                LOG.warn("No location for ELB "+this+", cannot reload");
+                LOG.warn("No location for ELB " + this + ", cannot reload");
                 return;
             }
             String elbName = checkLoadBalancerName(LOAD_BALANCER_NAME);
             Set<String> targetAddresses = super.getServerPoolAddresses();
 
+            LoadBalancerServiceContext loadBalancerServiceContext = null;
             try {
                 loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
+                ELBApi elbApi = newELBApi(loadBalancerServiceContext);
 
                 Set<String> instances = ImmutableSet.copyOf(targetAddresses);
-                LoadBalancer loadBalancer = getELBApi().getLoadBalancerApi().get(elbName);
+                LoadBalancer loadBalancer = elbApi.getLoadBalancerApi().get(elbName);
                 Set<String> oldInstances = ImmutableSet.copyOf(loadBalancer.getInstanceIds());
                 Set<String> removedInstances = Sets.difference(oldInstances, instances);
                 Set<String> addedInstances = Sets.difference(instances, oldInstances);
 
                 if (!addedInstances.isEmpty()) {
-                    getELBApi().getInstanceApi().registerInstancesWithLoadBalancer(addedInstances, elbName);
+                    elbApi.getInstanceApi().registerInstancesWithLoadBalancer(addedInstances, elbName);
                 }
                 if (!removedInstances.isEmpty()) {
-                    getELBApi().getInstanceApi().registerInstancesWithLoadBalancer(removedInstances, elbName);
+                    elbApi.getInstanceApi().registerInstancesWithLoadBalancer(removedInstances, elbName);
                 }
             } finally {
                 Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
@@ -136,6 +131,10 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             LOG.warn("Problem reloading", e);
             throw Exceptions.propagate(e);
         }
+    }
+
+    ELBApi newELBApi(LoadBalancerServiceContext loadBalancerServiceContext) {
+        return loadBalancerServiceContext.unwrapApi(ELBApi.class);
     }
 
     private String checkLoadBalancerName(AttributeSensor<String> attributeSensor) {
@@ -164,7 +163,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 sensors().set(LOAD_BALANCER_NAME, elbName);
             } else {
                 if (doesLoadBalancerExist(elbName)) {
-                    throw new IllegalStateException("Cannot create ELB "+elbName+" in "+this+", because already exists (consider using configuration "+REPLACE_EXISTING.getName()+")");
+                    throw new IllegalStateException("Cannot create ELB " + elbName + " in " + this + ", because already exists (consider using configuration " + REPLACE_EXISTING.getName() + ")");
                 }
             }
 
@@ -183,23 +182,26 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         String identity = loc.getIdentity();
         String credential = loc.getCredential();
 
+        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(identity, credential);
-            // TODO would be cool to use the loadbalancer abstraction but it doesn't like an empty collection of nodes
-            String elbDnsName = "";
+            ELBApi elbApi = newELBApi(loadBalancerServiceContext);
+
+            String elbDnsName;
             Listener listener = buildListener();
-//          create vanilla load balancer
-            if(availabilityZoneNames != null && availabilityZoneNames.size() > 0 ){
-                elbDnsName = getELBApi().getLoadBalancerApi().createLoadBalancerInAvailabilityZones(elbName, ImmutableSet.<Listener>of(listener), availabilityZoneNames);
-            }
-            else if(subnets != null && !subnets.isEmpty()) {
-                elbDnsName = getELBApi().getLoadBalancerApi().createLoadBalancerInSubnets(elbName, ImmutableSet.<Listener>of(listener), subnets);
+
+            if (!availabilityZoneNames.isEmpty()) {
+                elbDnsName = elbApi.getLoadBalancerApi().createLoadBalancerInAvailabilityZones(elbName, ImmutableSet.<Listener>of(listener), availabilityZoneNames);
+            } else if (!subnets.isEmpty()) {
+                elbDnsName = elbApi.getLoadBalancerApi().createLoadBalancerInSubnets(elbName, ImmutableSet.<Listener>of(listener), subnets);
+            } else {
+                throw new RuntimeException("You must supply a list of availability zones or subnets");
             }
 
-            LoadBalancer loadbalancer = getELBApi().getLoadBalancerApi().get(elbName);
-            configureListeners(elbName, loadbalancer);
-            configureHealthCheck();
-            configureListeners(elbName, loadbalancer);
+            LoadBalancer loadbalancer = elbApi.getLoadBalancerApi().get(elbName);
+            configureListeners(elbApi, elbName, loadbalancer);
+            configureHealthCheck(elbApi, elbName);
+            configureSecurityGroups(elbApi, elbName);
 
             sensors().set(Attributes.HOSTNAME, elbDnsName);
         } finally {
@@ -207,15 +209,14 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
     }
 
-    private void configureHealthCheck() {
-        String elbName = getConfig(LOAD_BALANCER_NAME);
+    private void configureHealthCheck(ELBApi elbApi, String elbName) {
         Integer healthCheckInterval = getConfig(HEALTH_CHECK_INTERVAL);
         Integer healthCheckTimeout = getConfig(HEALTH_CHECK_TIMEOUT);
         Integer healthCheckHealthyThreshold = getConfig(HEALTH_CHECK_HEALTHY_THRESHOLD);
         Integer healthCheckUnhealthyThreshold = getConfig(HEALTH_CHECK_UNHEALTHY_THRESHOLD);
         String healthCheckTarget = getConfig(HEALTH_CHECK_TARGET);
 
-        final LoadBalancer loadBalancer = getELBApi().getLoadBalancerApi().get(elbName);
+        final LoadBalancer loadBalancer = elbApi.getLoadBalancerApi().get(elbName);
         final HealthCheck healthCheck = loadBalancer.getHealthCheck();
 
         final HealthCheck healthCheckConfig = HealthCheck.builder()
@@ -226,19 +227,13 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 .timeout(healthCheckTimeout != null ? healthCheckTimeout : healthCheck.getTimeout())
                 .build();
 
-        getELBApi().getHealthCheckApi().configureHealthCheck(elbName, healthCheckConfig);
+        elbApi.getHealthCheckApi().configureHealthCheck(elbName, healthCheckConfig);
     }
 
-    private LoadBalancerServiceContext newLoadBalancerServiceContext(String identity, String credential) {
-        if(loadBalancerServiceContext != null){
-            return loadBalancerServiceContext;
-        }
+    LoadBalancerServiceContext newLoadBalancerServiceContext(String identity, String credential) {
         return ContextBuilder.newBuilder("aws-elb")
                 .credentials(identity, credential)
                 .buildView(typeToken(LoadBalancerServiceContext.class));
-    }
-    LoadBalancerServiceContext getLoadBalancerServiceContext(){
-        return loadBalancerServiceContext;
     }
 
     protected void reinitLoadBalancer() {
@@ -249,78 +244,81 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
         LOG.debug("Re-initialising existing ELB: " + elbName);
 
+        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
+            ELBApi elbApi = newELBApi(loadBalancerServiceContext);
 
-            LoadBalancer loadBalancer = getELBApi().getLoadBalancerApi().get(elbName);
+            LoadBalancer loadBalancer = elbApi.getLoadBalancerApi().get(elbName);
             Scheme oldScheme = loadBalancer.getScheme().orNull();
             if (oldScheme != null && !oldScheme.value().equals(elbScheme)) {
                 LOG.warn("Existing ELB {} scheme ({}) is different from configuration ({}); cannot modify; continuing",
-                        new Object[] {elbName, oldScheme, elbScheme});
+                        new Object[]{elbName, oldScheme, elbScheme});
             }
 
-            configureSecurityGroups(elbName);
+            configureSecurityGroups(elbApi, elbName);
 
-            configureAvailabilityZones(elbName, loadBalancer);
+            configureAvailabilityZones(elbApi, elbName, loadBalancer);
 
-            configureSubnets(elbName, loadBalancer);
+            configureSubnets(elbApi, elbName, loadBalancer);
 
-            configureListeners(elbName, loadBalancer);
-            configureHealthCheck();
+            configureListeners(elbApi, elbName, loadBalancer);
+            configureHealthCheck(elbApi, elbName);
 
             sensors().set(Attributes.HOSTNAME, loadBalancer.getDnsName());
-            }
-        finally {
+        } finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
 
     }
-    private void configureSecurityGroups(String elbName){
+
+    private void configureSecurityGroups(ELBApi elbApi, String elbName) {
         final Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
 
         if (securityGroups != null && securityGroups.size() > 0) {
-            getELBApi().getLoadBalancerApi().applySecurityGroupsToLoadBalancer(elbName, securityGroups != null ? securityGroups : ImmutableList.<String>of());
+            elbApi.getLoadBalancerApi().applySecurityGroupsToLoadBalancer(elbName, securityGroups);
         }
 
     }
-    private void configureAvailabilityZones(String elbName, LoadBalancer loadBalancer) {
+
+    private void configureAvailabilityZones(ELBApi elbApi, String elbName, LoadBalancer loadBalancer) {
         Set<String> availabilityZoneNames = (getConfig(AVAILABILITY_ZONES) != null) ? ImmutableSet.copyOf(getConfig(AVAILABILITY_ZONES)) : ImmutableSet.<String>of();
 
-        if (availabilityZoneNames != null && availabilityZoneNames.size() > 0) {
+        if (availabilityZoneNames.size() > 0) {
 
-            // Set the availability zones
             Set<String> oldAvailabilityZoneNames = loadBalancer.getAvailabilityZones();
             Set<String> oldAvailabilityZoneNamesSet = ImmutableSet.copyOf(oldAvailabilityZoneNames);
-            Set<String> removedAvailabilityZoneNames = Sets.difference(oldAvailabilityZoneNamesSet, ImmutableSet.copyOf(availabilityZoneNames));
-            Set<String> addedAvailabilityZoneNames = Sets.difference(ImmutableSet.copyOf(availabilityZoneNames), oldAvailabilityZoneNamesSet);
+            Set<String> removedAvailabilityZoneNames = Sets.difference(oldAvailabilityZoneNamesSet, availabilityZoneNames);
+            Set<String> addedAvailabilityZoneNames = Sets.difference(availabilityZoneNames, oldAvailabilityZoneNamesSet);
+
             if (!addedAvailabilityZoneNames.isEmpty()) {
-                getELBApi().getAvailabilityZoneApi().addAvailabilityZonesToLoadBalancer(addedAvailabilityZoneNames, elbName);
+                elbApi.getAvailabilityZoneApi().addAvailabilityZonesToLoadBalancer(addedAvailabilityZoneNames, elbName);
             }
             if (!removedAvailabilityZoneNames.isEmpty()) {
-                getELBApi().getAvailabilityZoneApi().removeAvailabilityZonesFromLoadBalancer(addedAvailabilityZoneNames, elbName);
+                elbApi.getAvailabilityZoneApi().removeAvailabilityZonesFromLoadBalancer(removedAvailabilityZoneNames, elbName);
             }
 
         }
     }
 
-    private void configureSubnets(String elbName, LoadBalancer loadBalancer) {
+    private void configureSubnets(ELBApi elbApi, String elbName, LoadBalancer loadBalancer) {
         Set<String> subnets = (getConfig(LOAD_BALANCER_SUBNETS) != null) ? ImmutableSet.copyOf(getConfig(LOAD_BALANCER_SUBNETS)) : ImmutableSet.<String>of();
 
-        if(subnets != null && subnets.size() > 0) {
+        if (subnets.size() > 0) {
             Set<String> oldSubnets = ImmutableSet.copyOf(loadBalancer.getSubnets());
             Set<String> removedSubnets = Sets.difference(oldSubnets, subnets);
             Set<String> addedSubnets = Sets.difference(subnets, oldSubnets);
             if (!addedSubnets.isEmpty()) {
-                getELBApi().getSubnetApi().attachLoadBalancerToSubnets(elbName, addedSubnets);
+                elbApi.getSubnetApi().attachLoadBalancerToSubnets(elbName, addedSubnets);
             }
             if (!removedSubnets.isEmpty()) {
-                getELBApi().getSubnetApi().detachLoadBalancerFromSubnets(elbName, removedSubnets);
+                elbApi.getSubnetApi().detachLoadBalancerFromSubnets(elbName, removedSubnets);
             }
 
         }
     }
 
-    private void configureListeners(String elbName, LoadBalancer loadBalancer) {
+    private void configureListeners(ELBApi elbApi, String elbName, LoadBalancer loadBalancer) {
         Set<ListenerWithPolicies> listenerWithPolicies = loadBalancer.getListeners();
         Set<Integer> listenerPorts = Sets.newHashSet();
         for (ListenerWithPolicies listenerWithPolicy : listenerWithPolicies) {
@@ -328,20 +326,20 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
 
         if (!listenerPorts.isEmpty()) {
-            getELBApi().getLoadBalancerApi().deleteLoadBalancerListeners(elbName, listenerPorts);
+            elbApi.getLoadBalancerApi().deleteLoadBalancerListeners(elbName, listenerPorts);
         }
         Listener listener = buildListener();
-        getELBApi().getLoadBalancerApi().createLoadBalancerListeners(elbName, ImmutableSet.<Listener>of(listener));
+        elbApi.getLoadBalancerApi().createLoadBalancerListeners(elbName, ImmutableSet.<Listener>of(listener));
 
     }
 
-    private Listener buildListener (){
+    private Listener buildListener() {
         int loadBalancerPort = getRequiredConfig(LOAD_BALANCER_PORT);
         int instancePort = getRequiredConfig(INSTANCE_PORT);
         String instanceProtocol = getRequiredConfig(INSTANCE_PROTOCOL);
         String loadBalancerProtocol = getRequiredConfig(LOAD_BALANCER_PROTOCOL);
 
-        return  Listener.builder()
+        return Listener.builder()
                 .protocol(Protocol.valueOf(loadBalancerProtocol))
                 .instancePort(instancePort)
                 .instanceProtocol(Protocol.valueOf(instanceProtocol))
@@ -363,17 +361,19 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             elbName = new JcloudsMachineNamer().generateNewGroupId(setup);
             boolean exists = doesLoadBalancerExist(elbName);
             if (!exists) return elbName;
-            LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; trying again (attempt {}) to generate name", new Object[] {elbName, this, (i+2)});
+            LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; trying again (attempt {}) to generate name", new Object[]{elbName, this, (i + 2)});
         }
-        throw new IllegalStateException("Failed to unused auto-genreate ELB name after "+maxAttempts+" attempts (last attempt was "+elbName+")");
+        throw new IllegalStateException("Failed to unused auto-genreate ELB name after " + maxAttempts + " attempts (last attempt was " + elbName + ")");
     }
 
     protected boolean doesLoadBalancerExist(String elbName) {
         JcloudsLocation loc = getLocation();
+        String region = loc.getRegion();
 
+        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
-            return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(elbName) != null;
+            return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(region+"/"+elbName) != null;
         } finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
@@ -383,6 +383,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         JcloudsLocation loc = getLocation();
         LOG.debug("Deleting ELB: " + elbName);
 
+        LoadBalancerServiceContext loadBalancerServiceContext = null;
         try {
             loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
             loadBalancerServiceContext.getLoadBalancerService().destroyLoadBalancer(elbName);
@@ -390,27 +391,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
     }
-
-    /*private Set<String> getAvailabilityZones(JcloudsLocation loc) {
-       Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
-        if (availabilityZones == null) {
-            String locName = loc.getRegion();
-            if (isAvailabilityZone(locName)) {
-                return ImmutableSet.of(locName); // location is a single availability zone
-            } else {
-                String regionName = getRegionName(loc);
-                AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
-                Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get().describeAvailabilityZonesInRegion(regionName);
-
-                Set<String> result = Sets.newLinkedHashSet();
-                for (AvailabilityZoneInfo zone : zones) {
-                    result.add(zone.getZone());
-                }
-                return result;
-            }
-        }
-        return ImmutableSet.copyOf(availabilityZones);
-    } */
 
     @Override
     protected String inferProtocol() {
@@ -423,7 +403,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         String protocol = inferProtocol();
         String domain = getAttribute(Attributes.HOSTNAME);
         Integer port = config().get(LOAD_BALANCER_PORT);
-        return protocol + "://" + domain + (port == null ? "" : ":"+port);
+        return protocol + "://" + domain + (port == null ? "" : ":" + port);
     }
 
     @Override
@@ -436,14 +416,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         // see #reload(); no prep required in reconfigureService
     }
 
-    ELBApi getELBApi() {
-        if(elbApi != null){
-            return elbApi;
-        }
-        elbApi = getLoadBalancerServiceContext().unwrapApi(ELBApi.class);
-        return elbApi;
-    }
-
     @Override
     protected String getAddressOfEntity(Entity member) {
         JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Iterables.find(member.getLocations(),
@@ -452,43 +424,25 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         if (machine != null && machine.getJcloudsId() != null) {
             return machine.getJcloudsId().split("\\/")[1];
         } else {
-            LOG.error("Unable to construct JcloudsId representation for {}; skipping in {}", new Object[] { member, this });
+            LOG.error("Unable to construct JcloudsId representation for {}; skipping in {}", new Object[]{member, this});
             return null;
         }
-    }
-
-    protected String getRegionName(JcloudsLocation loc) {
-        String regionName = loc.getRegion();
-        if (Strings.isNonBlank(regionName) && Character.isLetter(regionName.charAt(regionName.length()-1))) {
-            // it's an availability zone; strip off the letter suffix
-            regionName = regionName.substring(0, regionName.length()-1);
-        }
-        return regionName;
-    }
-
-    protected boolean isAvailabilityZone(String name) {
-        return Strings.isNonBlank(name) && Character.isLetter(name.charAt(name.length()-1));
     }
 
     protected <T> T getRequiredConfig(ConfigKey<T> key) {
         return checkNotNull(getConfig(key), key.getName());
     }
 
-    protected <T> T getRequiredConfig(HasConfigKey<T> key) {
-        return checkNotNull(getConfig(key), key.getConfigKey().getName());
-    }
-
     protected JcloudsLocation getLocation() {
         JcloudsLocation result = getAttribute(JCLOUDS_LOCATION);
-        //checkNotNull(result, "JcloudsLocation not set - was ELB started, or has it been stopped?");
         return result;
     }
 
     protected JcloudsLocation inferLocation(@Nullable Collection<? extends Location> locations) {
-        if(getLocation() != null){
+        if (getLocation() != null) {
             return getLocation();
         }
-        if (locations==null || locations.isEmpty()) locations = getLocations();
+        if (locations == null || locations.isEmpty()) locations = getLocations();
         locations = Locations.getLocationsCheckingAncestors(locations, this);
 
         Maybe<JcloudsLocation> result = Machines.findUniqueElement(locations, JcloudsLocation.class);
@@ -497,11 +451,11 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
 
         if (locations == null || locations.isEmpty()) {
-            throw new IllegalArgumentException("No locations specified when starting "+this);
-        } else if (locations.size() != 1 || Iterables.getOnlyElement(locations)==null) {
-            throw new IllegalArgumentException("Ambiguous locations detected when starting "+this+": "+locations);
+            throw new IllegalArgumentException("No locations specified when starting " + this);
+        } else if (locations.size() != 1 || Iterables.getOnlyElement(locations) == null) {
+            throw new IllegalArgumentException("Ambiguous locations detected when starting " + this + ": " + locations);
         } else {
-            throw new IllegalArgumentException("No matching JcloudsLocation when starting "+this+": "+locations);
+            throw new IllegalArgumentException("No matching JcloudsLocation when starting " + this + ": " + locations);
         }
     }
 }

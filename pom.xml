@@ -7,7 +7,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <jclouds.labs.version>2.0.1-SNAPSHOT</jclouds.labs.version>
+        <jclouds.labs.version>2.1.0-SNAPSHOT</jclouds.labs.version>
     </properties>
 
     <name>Brooklyn AWS Elastic Load Balancer</name>
@@ -88,6 +88,36 @@
             <artifactId>javax.ws.rs-api</artifactId>
             <version>2.0.1</version>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.amazonaws</groupId>
+            <artifactId>aws-java-sdk</artifactId>
+            <version>1.10.53</version>
+            <scope>test</scope>
+            <!-- The included version of Jackson breaks our REST UI -->
+            <exclusions>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-databind</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-annotations</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-core</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>joda-time</artifactId>
+                    <groupId>joda-time</groupId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>2.4</version>
         </dependency>
 
 <!--

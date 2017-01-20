@@ -12,6 +12,7 @@ import java.net.Socket;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 
 import org.apache.brooklyn.api.entity.Entity;
 import org.apache.brooklyn.api.entity.EntitySpec;
@@ -36,18 +37,39 @@ import org.apache.brooklyn.test.Asserts;
 import org.apache.brooklyn.util.exceptions.Exceptions;
 import org.apache.brooklyn.util.http.HttpAsserts;
 import org.apache.brooklyn.util.net.Networking;
+import org.apache.brooklyn.util.repeat.Repeater;
 import org.apache.brooklyn.util.ssh.BashCommands;
 import org.apache.brooklyn.util.text.Identifiers;
+import org.apache.brooklyn.util.time.Duration;
+import org.jclouds.elb.ELBApi;
 import org.jclouds.elb.domain.HealthCheck;
 import org.jclouds.elb.domain.LoadBalancer;
+import org.jclouds.loadbalancer.LoadBalancerServiceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.regions.Region;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.ec2.AmazonEC2Client;
+import com.amazonaws.services.ec2.model.AttachInternetGatewayRequest;
+import com.amazonaws.services.ec2.model.CreateInternetGatewayRequest;
+import com.amazonaws.services.ec2.model.CreateSubnetRequest;
+import com.amazonaws.services.ec2.model.CreateVpcRequest;
+import com.amazonaws.services.ec2.model.DeleteInternetGatewayRequest;
+import com.amazonaws.services.ec2.model.DeleteSubnetRequest;
+import com.amazonaws.services.ec2.model.DeleteVpcRequest;
+import com.amazonaws.services.ec2.model.DetachInternetGatewayRequest;
+import com.amazonaws.services.ec2.model.InternetGateway;
+import com.amazonaws.services.ec2.model.Subnet;
+import com.amazonaws.services.ec2.model.Vpc;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 
 public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
@@ -81,11 +103,14 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final int HEALTH_CHECK_INTERVAL = 10;
     public static final int HEALTH_CHECK_TIMEOUT = 3;
     private final String TCP_PROTOCOL = "TCP";
+    private final String CIDR_BLOCK = "10.0.0.0/16";
 
     // Image: {id=us-east-1/ami-7d7bfc14, providerId=ami-7d7bfc14, name=RightImage_CentOS_6.3_x64_v5.8.8.5, location={scope=REGION, id=us-east-1, description=us-east-1, parent=aws-ec2, iso3166Codes=[US-VA]}, os={family=centos, arch=paravirtual, version=6.0, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, is64Bit=true}, description=rightscale-us-east/RightImage_CentOS_6.3_x64_v5.8.8.5.manifest.xml, version=5.8.8.5, status=AVAILABLE[available], loginUser=root, userMetadata={owner=411009282317, rootDeviceType=instance-store, virtualizationType=paravirtual, hypervisor=xen}}
     //runTest(ImmutableMap.of("imageId", "us-east-1/ami-7d7bfc14", "hardwareId", SMALL_HARDWARE_ID));
 
     protected BrooklynProperties brooklynProperties;
+    String identity;
+    String credential;
 
     protected Location loc;
     protected Location locAZ;
@@ -94,6 +119,10 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     private ElbController elb;
 
     private SshMachineLocation localMachine;
+    private AmazonEC2Client client;
+    Subnet subnet;
+    Vpc vpc;
+    InternetGateway internetGateway;
 
     @BeforeMethod(alwaysRun=true)
     @Override
@@ -112,6 +141,8 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         mgmt = new LocalManagementContext(brooklynProperties);
 
         super.setUp();
+        identity = brooklynProperties.getFirst("brooklyn.location.jclouds.aws-ec2.identity");
+        credential = brooklynProperties.getFirst("brooklyn.location.jclouds.aws-ec2.credential");
 
         Map<String,?> flags = ImmutableMap.of("tags", ImmutableList.of(getClass().getName()));
         loc = mgmt.getLocationRegistry().resolve(LOCATION_SPEC, flags);
@@ -393,8 +424,8 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         app.addLocations(locs);
 
         app.start(locs);
-
-        final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
+        final ELBApi elbApi = createElbApi(elbImpl);
+        final LoadBalancer loadBalancer = elbApi.getLoadBalancerApi().get(elbName);
         final HealthCheck healthCheck = loadBalancer.getHealthCheck();
         assertEquals(loadBalancer.getName(), elbName);
         assertEquals(healthCheck.getTarget(), HEALTH_CHECK_TARGET_HTTP);
@@ -403,6 +434,11 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         assertEquals(healthCheck.getInterval(), HEALTH_CHECK_INTERVAL);
         assertEquals(healthCheck.getTimeout(), HEALTH_CHECK_TIMEOUT);
 
+    }
+
+    private ELBApi createElbApi(ElbControllerImpl elbImpl) {
+        final LoadBalancerServiceContext loadBalancerServiceContext = elbImpl.newLoadBalancerServiceContext(identity, credential);
+        return elbImpl.newELBApi(loadBalancerServiceContext);
     }
 
     @Test(groups="Live")
@@ -416,28 +452,34 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
                 .configure(ElbController.INSTANCE_PORT, 1235)));
 
+        final ELBApi elbApi = createElbApi(elbImpl);
+
         elb = elbImpl;
 
         app.addLocations(locs);
 
         app.start(locs);
 
-        final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
+        final LoadBalancer loadBalancer = elbApi.getLoadBalancerApi().get(elbName);
         assertEquals(loadBalancer.getName(), elbName);
         assertTrue(loadBalancer.getAvailabilityZones().containsAll(AVAILABILITY_ZONES));
     }
 
     @Test(groups={"Live", "WIP"})
     public void testSubnets() throws Exception {
+        setupTestVPCAndSubnets();
+
         //TODO setup the subnets first
         String elbName = generateElbName("subnets");
         ElbControllerImpl elbImpl = (ElbControllerImpl) Entities.deproxy(app.createAndManageChild(EntitySpec.create(ElbController.class)
-                .configure(ElbController.LOAD_BALANCER_SUBNETS, SUBNETS)
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, ImmutableSet.of(subnet.getSubnetId()))
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
                 .configure(ElbController.INSTANCE_PORT, 1235)));
+
+        final ELBApi elbApi = createElbApi(elbImpl);
 
         elb = elbImpl;
 
@@ -445,10 +487,67 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
         app.start(locs);
 
-        final LoadBalancer loadBalancer = elbImpl.getELBApi().getLoadBalancerApi().get(elbName);
+        final LoadBalancer loadBalancer = elbApi.getLoadBalancerApi().get(elbName);
         assertEquals(loadBalancer.getName(), elbName);
-        assertTrue(loadBalancer.getAvailabilityZones().containsAll(SUBNETS));
-        assertTrue(loadBalancer.getAvailabilityZones().isEmpty());
+        assertTrue(loadBalancer.getSubnets().contains(subnet.getSubnetId()));
+
+        tearDownTestVPCandSubnets();
 
     }
+    protected AmazonEC2Client newAmazonEc2Client() {
+        AWSCredentials awsCredentials = new BasicAWSCredentials(identity, credential);
+        AmazonEC2Client client = new AmazonEC2Client(awsCredentials);
+
+        Region targetRegion = Region.getRegion(Regions.fromName(REGION_NAME));
+        client.setRegion(targetRegion);
+
+        return client;
+    }
+    protected void setupTestVPCAndSubnets(){
+        client = newAmazonEc2Client();
+        CreateVpcRequest testVpcRequest = new CreateVpcRequest()
+                .withCidrBlock(CIDR_BLOCK);
+
+        vpc = client.createVpc(testVpcRequest).getVpc();
+
+        CreateSubnetRequest subnetRequest = new CreateSubnetRequest()
+                .withVpcId(vpc.getVpcId())
+                .withCidrBlock(CIDR_BLOCK);
+
+        CreateInternetGatewayRequest createInternetGatewayRequest = new CreateInternetGatewayRequest();
+        internetGateway = client.createInternetGateway(createInternetGatewayRequest).getInternetGateway();
+
+        subnet = client.createSubnet(subnetRequest).getSubnet();
+
+        AttachInternetGatewayRequest attachInternetGatewayRequest = new AttachInternetGatewayRequest()
+                .withInternetGatewayId(internetGateway.getInternetGatewayId())
+                .withVpcId(vpc.getVpcId());
+
+        client.attachInternetGateway(attachInternetGatewayRequest);
+
+        LOG.error("created VPC"+ vpc.getVpcId());
+    }
+
+    protected void tearDownTestVPCandSubnets(){
+        final DeleteSubnetRequest deleteSubnetRequest = new DeleteSubnetRequest().withSubnetId(subnet.getSubnetId());
+        final DetachInternetGatewayRequest detachInternetGatewayRequest = new DetachInternetGatewayRequest().withInternetGatewayId(internetGateway.getInternetGatewayId()).withVpcId(vpc.getVpcId());
+        final DeleteInternetGatewayRequest deleteInternetGatewayRequest = new DeleteInternetGatewayRequest().withInternetGatewayId(internetGateway.getInternetGatewayId());
+        final DeleteVpcRequest deleteVpcRequest = new DeleteVpcRequest().withVpcId(vpc.getVpcId());
+
+        Repeater.create("tear down subnet, vpc and internet gateway")
+                .until(new Callable<Boolean>() {
+                    public Boolean call() {
+                        client.deleteSubnet(deleteSubnetRequest);
+                        client.deleteInternetGateway(deleteInternetGatewayRequest);
+                        client.detachInternetGateway(detachInternetGatewayRequest);
+                        client.deleteVpc(deleteVpcRequest);
+
+                        return true;
+                    }
+                })
+                .every(Duration.THIRTY_SECONDS)
+                .limitIterationsTo(10)
+                .run();
+    }
+
 }

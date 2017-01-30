@@ -2,6 +2,7 @@ package brooklyn.entity.proxy.aws;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.collect.ImmutableList.copyOf;
 
 import java.util.Collection;
 import java.util.List;
@@ -15,6 +16,7 @@ import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.config.ConfigKey;
 import org.apache.brooklyn.config.ConfigKey.HasConfigKey;
 import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.entity.BrooklynConfigKeys;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic.ServiceProblemsLogic;
@@ -26,6 +28,8 @@ import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
 import org.apache.brooklyn.feed.function.FunctionFeed;
 import org.apache.brooklyn.feed.function.FunctionPollConfig;
 import org.apache.brooklyn.location.jclouds.JcloudsLocation;
+import org.apache.brooklyn.location.jclouds.JcloudsLocationConfig;
+import org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer;
 import org.apache.brooklyn.location.jclouds.JcloudsMachineNamer;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
 import org.apache.brooklyn.util.core.config.ConfigBag;
@@ -35,6 +39,7 @@ import org.apache.brooklyn.util.guava.Maybe;
 import org.apache.brooklyn.util.text.Strings;
 import org.apache.brooklyn.util.time.Duration;
 import org.jclouds.aws.ec2.AWSEC2Api;
+import org.jclouds.compute.domain.Template;
 import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -97,7 +102,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
      *  - LBCookieStickinessPolicy
      *  - LoadBalancerPoliciesForBackendServer
      *  - LoadBalancerListenerSslCertificate
-     *  - Go through com.amazonaws.services.elasticloadbalancing.AmazonElasticLoadBalancingClient carefully, to see nothing else is missed
+     *  - Go through com.amazonaws.services.elasticloadbalancing.AmazonElasticLoadBalancingClient carefully,
+     *  to see nothing else is missed
      */
     
     // TODO Add unit tests for rebind
@@ -115,7 +121,9 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         ServiceStateLogic.setExpectedState(this, Lifecycle.STARTING);
         try {
             JcloudsLocation loc = inferLocation(locations);
-            checkArgument("aws-ec2".equals(loc.getProvider()), "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)", loc.getProvider(), loc);
+            checkArgument("aws-ec2".equals(loc.getProvider()),
+                "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)",
+                loc.getProvider(), loc);
             sensors().set(JCLOUDS_LOCATION, loc);
 
             ConfigToAttributes.apply(this, LOAD_BALANCER_NAME);
@@ -141,10 +149,16 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     }
 
     protected void republishAttributes() {
+        Lifecycle state = ServiceStateLogic.getActualState(this);
+        if (state != Lifecycle.RUNNING) {
+            return; // don't republish if stopping, to avoid possible "Failed to retrieve ELB" if it's already gone
+        }
+
         AmazonElasticLoadBalancingClient client = null;
         try {
-            client = newClient(inferLocation(ImmutableList.of(getLocation())));
-            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest().withLoadBalancerNames(sensors().get(LOAD_BALANCER_NAME)));
+            client = elbClient(inferLocation(ImmutableList.of(getLocation())));
+            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(
+                new DescribeLoadBalancersRequest().withLoadBalancerNames(sensors().get(LOAD_BALANCER_NAME)));
             LoadBalancerDescription elb = loadBalancers.getLoadBalancerDescriptions().iterator().next();
             sensors().set(LOAD_BALANCER_SUBNETS, elb.getSubnets());
             sensors().set(LOAD_BALANCER_SECURITY_GROUPS, elb.getSecurityGroups());
@@ -153,7 +167,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             sensors().set(VPC_ID, elb.getVPCId());
             ServiceProblemsLogic.clearProblemsIndicator(this, "attributes");
         } catch (Exception e) {
-            ServiceProblemsLogic.updateProblemsIndicator(this, "attributes", "Failed to retrieve ELB data: " + e.getMessage());
+            ServiceProblemsLogic.updateProblemsIndicator(this, "attributes",
+                "Failed to retrieve ELB data: " + e.getMessage());
             sensors().set(LOAD_BALANCER_SUBNETS, null);
             sensors().set(LOAD_BALANCER_SECURITY_GROUPS, null);
             sensors().set(CANONICAL_HOSTED_ZONE_ID, null);
@@ -213,6 +228,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     @Override
     public void stop() {
+        ServiceStateLogic.setExpectedState(this, Lifecycle.STOPPING);
         // TODO should we deleteLoadBalancer?
         String elbName = getAttribute(LOAD_BALANCER_NAME);
         JcloudsLocation loc = getAttribute(JCLOUDS_LOCATION);
@@ -260,20 +276,23 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     
             LOG.debug("Reloading ELB "+elbName+"; instances="+instances);
     
-            AmazonElasticLoadBalancingClient client = newClient(loc);
+            AmazonElasticLoadBalancingClient client = elbClient(loc);
             try {
-                DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
+                DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(
+                    new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
                 List<LoadBalancerDescription> loadBalancerDescriptions = loadBalancers.getLoadBalancerDescriptions();
                 Set<Instance> oldInstances = ImmutableSet.copyOf(loadBalancerDescriptions.get(0).getInstances());
                 Set<Instance> removedInstances = Sets.difference(oldInstances, instances);
                 Set<Instance> addedInstances = Sets.difference(instances, oldInstances);
                 
                 if (!addedInstances.isEmpty()) {
-                    RegisterInstancesWithLoadBalancerRequest registerRequest = new RegisterInstancesWithLoadBalancerRequest(elbName, ImmutableList.copyOf(addedInstances));
+                    RegisterInstancesWithLoadBalancerRequest registerRequest =
+                        new RegisterInstancesWithLoadBalancerRequest(elbName, copyOf(addedInstances));
                     client.registerInstancesWithLoadBalancer(registerRequest);
                 }
                 if (!removedInstances.isEmpty()) {
-                    DeregisterInstancesFromLoadBalancerRequest deregisterRequest = new DeregisterInstancesFromLoadBalancerRequest(elbName, ImmutableList.copyOf(removedInstances));
+                    DeregisterInstancesFromLoadBalancerRequest deregisterRequest =
+                        new DeregisterInstancesFromLoadBalancerRequest(elbName, copyOf(removedInstances));
                     client.deregisterInstancesFromLoadBalancer(deregisterRequest);
                 }
             } finally {
@@ -293,7 +312,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         if (machine != null && machine.getJcloudsId() != null) {
             return machine.getJcloudsId().split("\\/")[1];
         } else {
-            LOG.error("Unable to construct JcloudsId representation for {}; skipping in {}", new Object[] { member, this });
+            LOG.error("Unable to construct JcloudsId representation for {}; skipping in {}",
+                new Object[] { member, this });
             return null;
         }
     }
@@ -307,7 +327,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             reinitLoadBalancer();
         } else if (getRequiredConfig(REPLACE_EXISTING)) {
             checkNotNull(elbName, "load balancer name must not be null if configured to replace any existing");
-            checkArgument(Strings.isNonBlank(elbName), "load balancer name must be non-blank if configured to replace any existing");
+            checkArgument(Strings.isNonBlank(elbName),
+                "load balancer name must be non-blank if configured to replace any existing");
             if (doesLoadBalancerExist(elbName)) {
                 deleteLoadBalancer(elbName);
             }
@@ -318,7 +339,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 sensors().set(LOAD_BALANCER_NAME, elbName);
             } else {
                 if (doesLoadBalancerExist(elbName)) {
-                    throw new IllegalStateException("Cannot create ELB "+elbName+" in "+this+", because already exists (consider using configuration "+REPLACE_EXISTING.getName()+")");
+                    throw new IllegalStateException("Cannot create ELB "+elbName+" in " + this
+                        + ", because already exists (consider using configuration "+REPLACE_EXISTING.getName()+")");
                 }
             }
 
@@ -346,7 +368,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         
         LOG.debug("Creating new ELB '"+elbName+"', for server-pool "+getConfig(SERVER_POOL));
 
-        AmazonElasticLoadBalancingClient client = newClient(loc);
+        AmazonElasticLoadBalancingClient client = elbClient(loc);
         try {
             CreateLoadBalancerRequest createLoadBalancerRequest = new CreateLoadBalancerRequest();
 
@@ -355,6 +377,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             if (Strings.isNonBlank(elbScheme)) createLoadBalancerRequest.setScheme(elbScheme);
             if (securityGroups != null) createLoadBalancerRequest.setSecurityGroups(securityGroups);
             if (subnets != null) createLoadBalancerRequest.setSubnets(subnets);
+            applyLocationCustomizers(loc);
             
             Listener listener = new Listener();
             listener.setProtocol(loadBalancerProtocol);
@@ -393,6 +416,15 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
     }
 
+    private Collection<JcloudsLocationCustomizer> getCustomizers() {
+        // newInstance handles the case that provisioning properties is null.
+        ConfigBag provisioningProperties = ConfigBag.newInstance(config().get(BrooklynConfigKeys.PROVISIONING_PROPERTIES));
+        Collection<JcloudsLocationCustomizer> existingCustomizers =
+            provisioningProperties.get(JcloudsLocationConfig.JCLOUDS_LOCATION_CUSTOMIZERS);
+        return existingCustomizers;
+    }
+
+
     protected void reinitLoadBalancer() {
         JcloudsLocation loc = getLocation();
         String elbName = checkNotNull(getAttribute(LOAD_BALANCER_NAME), LOAD_BALANCER_NAME.getName());
@@ -403,7 +435,9 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         String elbScheme = getConfig(LOAD_BALANCER_SCHEME);
         String loadBalancerProtocol = getRequiredConfig(LOAD_BALANCER_PROTOCOL);
         Collection<String> securityGroups = getConfig(LOAD_BALANCER_SECURITY_GROUPS);
-        Set<String> subnets = (getConfig(LOAD_BALANCER_SUBNETS) != null) ? ImmutableSet.copyOf(getConfig(LOAD_BALANCER_SUBNETS)) : ImmutableSet.<String>of();
+        Set<String> subnets = (getConfig(LOAD_BALANCER_SUBNETS) != null)
+            ? ImmutableSet.copyOf(getConfig(LOAD_BALANCER_SUBNETS))
+            : ImmutableSet.<String>of();
         String sslCertificateId = getConfig(SSL_CERTIFICATE_ID);
         Set<String> availabilityZoneNames = getAvailabilityZones(loc);
         Boolean healthCheckEnabled = getConfig(HEALTH_CHECK_ENABLED);
@@ -414,10 +448,11 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         
         LOG.debug("Re-initialising existing ELB: "+elbName);
 
-        AmazonElasticLoadBalancingClient client = newClient(loc);
+        AmazonElasticLoadBalancingClient client = elbClient(loc);
         try {
             // Find out about existing load balancer, so can clear+reset its configuration
-            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
+            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(
+                new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
             List<LoadBalancerDescription> loadBalancerDescriptions = loadBalancers.getLoadBalancerDescriptions();
             if (loadBalancerDescriptions.isEmpty()) {
                 throw new IllegalStateException("No existing load balancer with name "+elbName);
@@ -438,23 +473,27 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             Set<String> removedAvailabilityZoneNames = Sets.difference(oldAvailabilityZoneNamesSet, availabilityZoneNames);
             Set<String> addedAvailabilityZoneNames = Sets.difference(availabilityZoneNames, oldAvailabilityZoneNamesSet);
             if (!addedAvailabilityZoneNames.isEmpty()) {
-                EnableAvailabilityZonesForLoadBalancerRequest enableAvailabilityZonesRequest = new EnableAvailabilityZonesForLoadBalancerRequest()
+                EnableAvailabilityZonesForLoadBalancerRequest enableAvailabilityZonesRequest =
+                    new EnableAvailabilityZonesForLoadBalancerRequest()
                         .withLoadBalancerName(elbName)
                         .withAvailabilityZones(addedAvailabilityZoneNames);
                 client.enableAvailabilityZonesForLoadBalancer(enableAvailabilityZonesRequest);
             }
             if (!removedAvailabilityZoneNames.isEmpty()) {
-                DisableAvailabilityZonesForLoadBalancerRequest disableAvailabilityZonesRequest = new DisableAvailabilityZonesForLoadBalancerRequest()
+                DisableAvailabilityZonesForLoadBalancerRequest disableAvailabilityZonesRequest =
+                    new DisableAvailabilityZonesForLoadBalancerRequest()
                         .withLoadBalancerName(elbName)
                         .withAvailabilityZones(removedAvailabilityZoneNames);
                 client.disableAvailabilityZonesForLoadBalancer(disableAvailabilityZonesRequest);
             }
             
             // Set the security groups
-            // TODO Not changing security groups if config is empty, because calling applySecurityGroups with an empty list causes:
+            // TODO Not changing security groups if config is empty, because calling applySecurityGroups with an
+            // empty list causes:
             //      Caused by: AmazonServiceException: Status Code: 400, AWS Service: AmazonElasticLoadBalancing, AWS Request ID: f0661b5b-30ee-11e3-bd02-232415f6851f, AWS Error Code: ValidationError, AWS Error Message: 1 validation error detected: Value null at 'securityGroups' failed to satisfy constraint: Member must not be null
             if (securityGroups != null && securityGroups.size() > 0) {
-                ApplySecurityGroupsToLoadBalancerRequest securityGroupsRequest = new ApplySecurityGroupsToLoadBalancerRequest()
+                ApplySecurityGroupsToLoadBalancerRequest securityGroupsRequest =
+                    new ApplySecurityGroupsToLoadBalancerRequest()
                         .withLoadBalancerName(elbName)
                         .withSecurityGroups(securityGroups != null ? securityGroups : ImmutableList.<String>of());
                 client.applySecurityGroupsToLoadBalancer(securityGroupsRequest);
@@ -528,8 +567,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 // TODO Not removing old health check because passing in null for ConfigureHealthCheckRequest gives:
                 //      Caused by: AmazonServiceException: Status Code: 400, AWS Service: AmazonElasticLoadBalancing, AWS Request ID: 47a2b87d-30ef-11e3-bd82-6571b2f68bd5, AWS Error Code: ValidationError, AWS Error Message: 1 validation error detected: Value null at 'healthCheck' failed to satisfy constraint: Member must not be null
                 if (oldHealthCheck != null) {
-                    LOG.warn("Existing ELB {} (in {}) health check ({}) not removed (no new health check wanted; continuing", 
-                            new Object[] {elbName, this, oldHealthCheck});
+                    LOG.warn("Existing ELB {} (in {}) health check ({}) not removed " +
+                            "(no new health check wanted; continuing", new Object[]{elbName, this, oldHealthCheck});
                 }
             }
             
@@ -555,20 +594,23 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             elbName = new JcloudsMachineNamer().generateNewGroupId(setup);
             boolean exists = doesLoadBalancerExist(elbName);
             if (!exists) return elbName;
-            LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; trying again (attempt {}) to generate name", new Object[] {elbName, this, (i+2)});
+            LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; " +
+                    "trying again (attempt {}) to generate name", new Object[]{elbName, this, (i+2)});
         }
-        throw new IllegalStateException("Failed to unused auto-genreate ELB name after "+maxAttempts+" attempts (last attempt was "+elbName+")");
+        throw new IllegalStateException(
+            "Failed to auto-generate unused ELB name after "+maxAttempts+" attempts (last attempt was "+elbName+")");
     }
     
     protected boolean doesLoadBalancerExist(String elbName) {
         JcloudsLocation loc = getLocation();
-        AmazonElasticLoadBalancingClient client = newClient(loc);
+        AmazonElasticLoadBalancingClient client = elbClient(loc);
         try {
-            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
+            DescribeLoadBalancersResult loadBalancers = client.describeLoadBalancers(
+                new DescribeLoadBalancersRequest(ImmutableList.of(elbName)));
             List<LoadBalancerDescription> loadBalancerDescriptions = loadBalancers.getLoadBalancerDescriptions();
             return loadBalancerDescriptions.size() > 0;
         } catch (LoadBalancerNotFoundException e) {
-            LOG.trace("Load balancer {} not found when checking existance: {}", elbName, e);
+            LOG.trace("Load balancer {} not found when checking existence: {}", elbName, e);
             return false;
         } finally {
             if (client != null) client.shutdown();
@@ -579,13 +621,17 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         JcloudsLocation loc = getLocation();
         LOG.debug("Deleting ELB: "+elbName);
 
-        AmazonElasticLoadBalancingClient client = newClient(loc);
+        preReleaseLocationCustomizations();
+
+        AmazonElasticLoadBalancingClient client = elbClient(loc);
         try {
             DeleteLoadBalancerRequest deleteLoadBalancerRequest = new DeleteLoadBalancerRequest(elbName);
             client.deleteLoadBalancer(deleteLoadBalancerRequest);
         } finally {
             if (client != null) client.shutdown();
         }
+
+        postReleaseLocationCustomizations();
     }
 
     private Set<String> getAvailabilityZones(JcloudsLocation loc) {
@@ -597,7 +643,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             } else {
                 String regionName = getRegionName(loc);
                 AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
-                Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get().describeAvailabilityZonesInRegion(regionName);
+                Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get()
+                    .describeAvailabilityZonesInRegion(regionName);
                 
                 Set<String> result = Sets.newLinkedHashSet();
                 for (AvailabilityZoneInfo zone : zones) {
@@ -621,8 +668,65 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     protected boolean isAvailabilityZone(String name) {
         return Strings.isNonBlank(name) && Character.isLetter(name.charAt(name.length()-1));
     }
-    
-    protected AmazonElasticLoadBalancingClient newClient(JcloudsLocation loc) {
+
+    private void applyLocationCustomizers(JcloudsLocation loc) {
+
+        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
+        if (customizers != null) {
+            Template template = loc.buildTemplate(loc.getComputeService(), config().getBag(), customizers);
+            for (JcloudsLocationCustomizer customizer : customizers) {
+                customizer.customize(loc, loc.getComputeService(), template);
+                customizer.customize(loc, loc.getComputeService(), template.getOptions());
+            }
+        }
+    }
+
+    private void preReleaseLocationCustomizations() {
+        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
+        if (customizers != null) {
+            for (final JcloudsLocationCustomizer customizer : customizers) {
+                class PreReleaser implements Runnable {
+                    public void run() {
+                        customizer.preRelease(null);
+                    }
+                }
+                safelyRelease(new PreReleaser());
+            }
+        }
+    }
+
+    private void postReleaseLocationCustomizations() {
+        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
+        if (customizers != null) {
+            for (final JcloudsLocationCustomizer customizer : customizers) {
+                class PostReleaser implements Runnable {
+                    public void run() {
+                        customizer.postRelease(null);
+                    }
+                }
+                safelyRelease(new PostReleaser());
+            }
+        }
+    }
+
+    private void safelyRelease(Runnable releaser) {
+        try {
+            releaser.run();
+        } catch (Throwable t) {
+            if (Exceptions.isFatal(t)) {
+                LOG.error("Caught fatal error during customizer release, this customizer is not compatible with "
+                    + ElbController.class.getName());
+                Exceptions.propagate(t);
+            } else {
+                LOG.info("Ignoring non-fatal exception during customizer release, this customizer may not be compatible with {}",
+                    ElbController.class.getName());
+                LOG.debug("Caught non-fatal exception during customizer release", t);
+            }
+        }
+    }
+
+
+    protected AmazonElasticLoadBalancingClient elbClient(JcloudsLocation loc) {
         String regionName = getRegionName(loc);
         AWSCredentials awsCredentials = new BasicAWSCredentials(loc.getIdentity(), loc.getCredential());
         AmazonElasticLoadBalancingClient client = new AmazonElasticLoadBalancingClient(awsCredentials);
@@ -632,7 +736,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         
         return client;
     }
-    
+
+
     protected <T> T getRequiredConfig(ConfigKey<T> key) {
         return checkNotNull(getConfig(key), key.getName());
     }

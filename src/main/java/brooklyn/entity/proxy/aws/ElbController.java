@@ -10,14 +10,58 @@ import org.apache.brooklyn.core.config.ConfigKeys;
 import org.apache.brooklyn.core.entity.Attributes;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle.Transition;
-import org.apache.brooklyn.core.sensor.AttributeSensorAndConfigKey;
 import org.apache.brooklyn.core.sensor.BasicAttributeSensorAndConfigKey;
 import org.apache.brooklyn.core.sensor.Sensors;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedController;
 import org.apache.brooklyn.location.jclouds.JcloudsLocation;
+import org.jclouds.compute.ComputeService;
+import org.jclouds.compute.domain.Template;
+import org.jclouds.compute.domain.TemplateBuilder;
+import org.jclouds.compute.options.TemplateOptions;
 
 import com.google.common.reflect.TypeToken;
 
+/**
+ * An entity to manage an AWS Elastic Load Balancer.
+ * <p>
+ * Use DSL with the {@code loadbalancer.serverpool} configuration key to define the target entities over which the
+ * load balancer will balance requests.
+ * <p>
+ * Although no machine is provisioned when an ELB instance is created, this entity includes support for adding
+ * {@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer}s to permit customization of the entity
+ * based on its location. However, as no machine is provisioned, the only customization methods invoked are those
+ * related to location templates,
+ * <ul>
+ * <li>{@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer#customize(JcloudsLocation, ComputeService, Template)},
+ * <li>{@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer#customize(JcloudsLocation, ComputeService, TemplateBuilder)},
+ * <li>{@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer#customize(JcloudsLocation, ComputeService, TemplateOptions)}.
+ *</ul>
+ * <p>
+ * Example:
+<pre>
+name: elb-test
+location: aws-ec2:us-east-1
+services:
+
+- type: brooklyn.entity.proxy.aws.ElbController
+  name: ELB
+  brooklyn.config:
+    aws.elb.loadBalancerName: br-example-1
+    aws.elb.availabilityZones: [us-east-1a, us-east-1b]
+    aws.elb.loadBalancerProtocol: HTTP
+    aws.elb.instancePort: 8080
+    loadbalancer.serverpool: $brooklyn:entity("cluster")
+
+- type: org.apache.brooklyn.entity.group.DynamicCluster
+  id: cluster
+  name: cluster
+  brooklyn.config:
+    initialSize: 1
+    memberSpec:
+      $brooklyn:entitySpec:
+        type: org.apache.brooklyn.entity.software.base.EmptySoftwareProcess
+ </pre>
+ */
 @ImplementedBy(ElbControllerImpl.class)
 public interface ElbController extends AbstractNonProvisionedController {
 

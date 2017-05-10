@@ -6,6 +6,10 @@
     <version>0.4.0-SNAPSHOT</version> <!-- BROOKLYN_AWS_ELB_VERSION -->
     <packaging>jar</packaging>
 
+    <properties>
+        <jclouds.labs.version>2.1.0-SNAPSHOT</jclouds.labs.version>
+    </properties>
+
     <name>Brooklyn AWS Elastic Load Balancer</name>
     <description>
         Brooklyn AWS Elastic Load Balancer
@@ -15,7 +19,7 @@
     <parent>
         <groupId>org.apache.brooklyn</groupId>
         <artifactId>brooklyn-downstream-parent</artifactId>
-        <version>0.10.0-SNAPSHOT</version> <!-- BROOKLYN_VERSION -->
+        <version>0.11.0-SNAPSHOT</version> <!-- BROOKLYN_VERSION -->
     </parent>
 
     <licenses>
@@ -52,9 +56,8 @@
         <dependency>
             <groupId>org.apache.jclouds.labs</groupId>
             <artifactId>aws-elb</artifactId>
-            <version>${jclouds.version}</version>
+            <version>${jclouds.labs.version}</version>
         </dependency>
-
         <!-- test dependencies -->
         <dependency>
             <groupId>org.testng</groupId>
@@ -86,6 +89,37 @@
             <version>2.0.1</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.amazonaws</groupId>
+            <artifactId>aws-java-sdk</artifactId>
+            <version>1.10.53</version>
+            <scope>test</scope>
+            <!-- The included version of Jackson breaks our REST UI -->
+            <exclusions>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-databind</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-annotations</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-core</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>joda-time</artifactId>
+                    <groupId>joda-time</groupId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>2.4</version>
+        </dependency>
+
 <!--
         <dependency>
             <groupId>org.apache.brooklyn</groupId>

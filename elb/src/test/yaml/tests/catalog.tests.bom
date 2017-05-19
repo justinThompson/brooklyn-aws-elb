@@ -1,0 +1,99 @@
+brooklyn.catalog:
+  version: "1.0.0-SNAPSHOT"
+  items:
+  - "https://raw.githubusercontent.com/brooklyncentral/common-catalog-utils/2886bb69d4ed5d0bd1e239544a0a51df4a480ecb/common-tests/src/main/resources/commontests/common.tests.bom"
+  - id: elb-with-tomcat-cluster-tests
+    itemType: entity
+    item:
+      services:
+      - type: elb-with-tomcat-cluster
+        id: target-app
+        name: ELB with Tomcatcluster
+      - type: test-case
+        brooklyn.config:
+          targetId: target-app
+          targetResolutionTimeout: 10s
+          timeout: 40m
+        brooklyn.children:
+        - type: assert-up-and-running-initial
+          name: "1. Node up and running"
+
+        - type: test-case
+          name: "2. test elb main.uri"
+          brooklyn.children:
+          - type: test-http-status-200
+            name: "2.1 Check tomcat server main.uri"
+            brooklyn.config:
+              url: $brooklyn:entity($brooklyn:component("cluster").attributeWhenReady("cluster.first.entity")).attributeWhenReady("main.uri")
+          - type: test-http-status-200
+            name: "2.2 Check elb main.uri"
+            brooklyn.config:
+              url: $brooklyn:component("loadbalancer").attributeWhenReady("main.uri")
+
+        - type: test-case
+          name: "3. test sensors are set"
+          brooklyn.children:
+          - type: assert-sensor
+            name: "3.1 aws.elb.canonicalHostedZoneId"
+            targetId: loadbalancer
+            sensor: aws.elb.canonicalHostedZoneId
+            assert:
+              - notNull: true
+          - type: assert-sensor
+            name: "3.1 aws.elb.canonicalHostedZoneName"
+            targetId: loadbalancer
+            sensor: aws.elb.canonicalHostedZoneName
+            assert:
+              - notNull: true
+          - type: assert-sensor
+            name: "3.1 aws.elb.loadBalancerSecurityGroups"
+            targetId: loadbalancer
+            sensor: aws.elb.loadBalancerSecurityGroups
+            assert:
+              - notNull: true
+          - type: assert-sensor
+            name: "3.1 aws.elb.loadBalancerSubnets"
+            targetId: loadbalancer
+            sensor: aws.elb.loadBalancerSubnets
+            assert:
+              - notNull: true
+          - type: assert-sensor
+            name: "3.1 aws.elb.vpcId"
+            targetId: loadbalancer
+            sensor: aws.elb.vpcId
+            assert:
+              - notNull: true
+
+        - type: org.apache.brooklyn.test.framework.ParallelTestCase
+          name: "4. test resized cluster up to 2, check main.uri"
+          brooklyn.children:
+          - type: invoke-effector
+            name: "4.1. Resize cluster to 2"
+            target: $brooklyn:entity("cluster")
+            effector: resize
+            params:
+              desiredSize: 2
+          - type: test-http-success-repeat
+            name: "4.2 Check load balancer main.uri"
+            target: $brooklyn:entity($brooklyn:component("cluster").attributeWhenReady("cluster.first.entity"))
+            brooklyn.config:
+              targetUrl: $brooklyn:component("loadbalancer").attributeWhenReady("main.uri")
+              repeatCount: 15
+              targetResponseCode: 200
+
+        - type: org.apache.brooklyn.test.framework.ParallelTestCase
+          name: "5. test resized cluster down to 1, check main.uri"
+          brooklyn.children:
+          - type: invoke-effector
+            name: "5.1. Resize cluster to 1"
+            target: $brooklyn:entity("cluster")
+            effector: resize
+            params:
+              desiredSize: 1
+          - type: test-http-success-repeat
+            name: "4.2 Check load balancer main.uri"
+            target: $brooklyn:entity($brooklyn:component("cluster").attributeWhenReady("cluster.first.entity"))
+            brooklyn.config:
+              targetUrl: $brooklyn:component("loadbalancer").attributeWhenReady("main.uri")
+              repeatCount: 15
+              targetResponseCode: 200

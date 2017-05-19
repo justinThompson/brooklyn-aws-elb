@@ -1,0 +1,32 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.cloudsoft.aws.elb</groupId>
+        <artifactId>brooklyn-aws-elb-parent</artifactId>
+        <version>0.6.0-SNAPSHOT</version> <!-- BROOKLYN_AWS_ELB_VERSION -->
+    </parent>
+
+    <artifactId>brooklyn-aws-elb-feature</artifactId>
+    <name>Brooklyn AWS Elastic Load Balancer Karaf Feature</name>
+    <description>
+        Brooklyn AWS Elastic Load Balancer Karaf Feature
+    </description>
+    <url>https://github.com/cloudsoft/brooklyn-aws-elb/</url>
+    <packaging>feature</packaging>
+
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.karaf.tooling</groupId>
+                <artifactId>karaf-maven-plugin</artifactId>
+                <version>${karaf.plugin.version}</version>
+                <extensions>true</extensions>
+            </plugin>
+        </plugins>
+    </build>
+
+
+</project>

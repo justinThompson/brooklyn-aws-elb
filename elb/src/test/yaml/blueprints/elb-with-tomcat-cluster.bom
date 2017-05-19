@@ -1,0 +1,32 @@
+brooklyn.catalog:
+  version: "1.0.0-SNAPSHOT"
+  itemType: entity
+  items:
+    - id: elb-with-tomcat-cluster
+      name: "ELB with Tomcat cluster"
+      description: "ELB  with Tomcat cluster"
+      itemType: template
+      item:
+        services:
+        - type: brooklyn.entity.proxy.aws.ElbController
+          id: loadbalancer
+          name: ELB
+          brooklyn.config:
+            aws.elb.loadBalancerName: br-example-1
+            aws.elb.availabilityZones: [us-east-1a, us-east-1b]
+            aws.elb.loadBalancerProtocol: HTTP
+            aws.elb.instancePort: 8080
+            loadbalancer.serverpool: $brooklyn:entity("cluster")
+
+        - type: org.apache.brooklyn.entity.group.DynamicCluster
+          id: cluster
+          name: cluster
+          brooklyn.config:
+            initialSize: 1
+            memberSpec:
+              $brooklyn:entitySpec:
+                type: org.apache.brooklyn.entity.webapp.tomcat.Tomcat8Server
+                brooklyn.config:
+                  # points at maven-central 0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war
+                  wars.root: https://bit.ly/brooklyn-0_7-helloworld-war
+                  http.port: 8080

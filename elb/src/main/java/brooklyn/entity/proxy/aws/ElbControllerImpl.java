@@ -6,6 +6,7 @@ import static org.jclouds.reflect.Reflection2.typeToken;
 
 import java.util.Collection;
 import java.util.Set;
+import java.util.concurrent.Callable;
 
 import javax.annotation.Nullable;
 
@@ -15,21 +16,31 @@ import org.apache.brooklyn.api.location.Location;
 import org.apache.brooklyn.api.sensor.AttributeSensor;
 import org.apache.brooklyn.config.ConfigKey;
 import org.apache.brooklyn.core.entity.Attributes;
+import org.apache.brooklyn.core.entity.BrooklynConfigKeys;
 import org.apache.brooklyn.core.entity.lifecycle.Lifecycle;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic;
 import org.apache.brooklyn.core.entity.lifecycle.ServiceStateLogic.ServiceProblemsLogic;
 import org.apache.brooklyn.core.feed.ConfigToAttributes;
+import org.apache.brooklyn.core.feed.PollConfig;
 import org.apache.brooklyn.core.location.Locations;
 import org.apache.brooklyn.core.location.Machines;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedControllerImpl;
+import org.apache.brooklyn.feed.function.FunctionFeed;
+import org.apache.brooklyn.feed.function.FunctionPollConfig;
 import org.apache.brooklyn.location.jclouds.JcloudsLocation;
+import org.apache.brooklyn.location.jclouds.JcloudsLocationConfig;
+import org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer;
 import org.apache.brooklyn.location.jclouds.JcloudsMachineNamer;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
 import org.apache.brooklyn.util.core.config.ConfigBag;
 import org.apache.brooklyn.util.exceptions.Exceptions;
 import org.apache.brooklyn.util.guava.Maybe;
 import org.apache.brooklyn.util.text.Strings;
+import org.apache.brooklyn.util.time.Duration;
 import org.jclouds.ContextBuilder;
+import org.jclouds.aws.ec2.AWSEC2Api;
+import org.jclouds.compute.domain.Template;
+import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.jclouds.elb.ELBApi;
 import org.jclouds.elb.domain.HealthCheck;
 import org.jclouds.elb.domain.Listener;
@@ -43,16 +54,47 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 
 public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl implements ElbController {
 
+    /*
+     * TODO More options that could be exposed:
+     *
+     *  - com.amazonaws.ClientConfiguration
+     *    - protocol
+     *    - maxConnections
+     *    - userAgent
+     *    - proxyHost
+     *    - proxyPort
+     *    - proxyUsername
+     *    - proxyPassword
+     *    - proxyDomain
+     *    - proxyWorkstation
+     *    - maxErrorRetry
+     *    - socketTimeout
+     *    - connectionTimeout
+     *    - socketBufferSizeHints
+     *  - com.amazonaws.handlers.RequestHandler (beforeRequest, afterRequest, afterError)
+     *  - AppCookieStickinessPolicy
+     *  - LBCookieStickinessPolicy
+     *  - LoadBalancerPoliciesForBackendServer
+     *  - LoadBalancerListenerSslCertificate
+     *  - Go through com.amazonaws.services.elasticloadbalancing.AmazonElasticLoadBalancingClient carefully,
+     *  to see nothing else is missed
+     */
+
+    // TODO Add unit tests for rebind
+
     // TODO Use the SoftwareProcess's approach of expectedState and serviceUpIndicators
     // TODO What should lifecycle be if effector deleteLoadBalancer is called?
 
     private static final Logger LOG = LoggerFactory.getLogger(ElbControllerImpl.class);
+
+    private FunctionFeed elbAttributesFeed;
 
     @Override
     protected void doStart(Collection<? extends Location> locations) {
@@ -60,23 +102,86 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         ServiceStateLogic.setExpectedState(this, Lifecycle.STARTING);
         try {
             JcloudsLocation loc = inferLocation(locations);
-            checkArgument("aws-ec2".equals(loc.getProvider()), "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)", loc.getProvider(), loc);
+
+            checkArgument("aws-ec2".equals(loc.getProvider()),
+                "start must have exactly one jclouds location for aws-ec2, but given provider %s (%s)",
+                loc.getProvider(), loc);
             sensors().set(JCLOUDS_LOCATION, loc);
 
-            ConfigToAttributes.apply(this);
+            ConfigToAttributes.apply(this, LOAD_BALANCER_NAME);
 
             startLoadBalancer();
             isActive = true;
 
             sensors().set(SERVICE_UP, true);
-
         } finally {
             ServiceStateLogic.setExpectedState(this, Lifecycle.RUNNING);
         }
     }
 
     @Override
+    protected void postStart() {
+        super.postStart();
+        elbAttributesFeed = FunctionFeed.builder()
+                .entity(this)
+                .onlyIfServiceUp()
+                .period(Duration.THIRTY_SECONDS)
+                .poll(FunctionPollConfig.forSensor(PollConfig.NO_SENSOR).callable(new RepublishAttributesCallable()))
+                .build();
+    }
+
+    // TODO REPLACE THIS USE OF JAVA CLIENT
+    protected void republishAttributes() {
+        Lifecycle state = ServiceStateLogic.getActualState(this);
+        if (state != Lifecycle.RUNNING) {
+            return; // don't republish if stopping, to avoid possible "Failed to retrieve ELB" if it's already gone
+        }
+
+        LoadBalancerServiceContext loadBalancerServiceContext = null;
+        try {
+             JcloudsLocation location = inferLocation(ImmutableList.of(getLocation()));
+
+            loadBalancerServiceContext = newLoadBalancerServiceContext(location.getIdentity(), location.getCredential());
+            ELBApi elbApi = newELBApi(loadBalancerServiceContext);
+
+
+            LoadBalancer elb = elbApi.getLoadBalancerApi().get(getConfig(LOAD_BALANCER_NAME));
+
+            sensors().set(LOAD_BALANCER_SUBNETS, elb.getSubnets());
+            sensors().set(LOAD_BALANCER_SECURITY_GROUPS, elb.getSecurityGroups());
+            sensors().set(CANONICAL_HOSTED_ZONE_NAME, elb.getHostedZoneName().get());
+            sensors().set(CANONICAL_HOSTED_ZONE_ID, elb.getHostedZoneId().get());
+            sensors().set(VPC_ID, elb.getVPCId().get());
+            ServiceProblemsLogic.clearProblemsIndicator(this, "attributes");
+        } catch (Exception e) {
+            ServiceProblemsLogic.updateProblemsIndicator(this, "attributes",
+                    "Failed to retrieve ELB data: " + e.getMessage());
+            sensors().set(LOAD_BALANCER_SUBNETS, null);
+            sensors().set(LOAD_BALANCER_SECURITY_GROUPS, null);
+            sensors().set(CANONICAL_HOSTED_ZONE_ID, null);
+            sensors().set(CANONICAL_HOSTED_ZONE_NAME, null);
+            sensors().set(VPC_ID, null);
+        }
+    }
+
+    protected JcloudsLocation getLocation() {
+        JcloudsLocation result = getAttribute(JCLOUDS_LOCATION);
+        checkNotNull(result, "JcloudsLocation not set - was ELB started, or has it been stopped?");
+        return result;
+    }
+
+    @Override
+    protected void preStop() {
+        if (elbAttributesFeed != null) {
+            elbAttributesFeed.stop();
+            elbAttributesFeed = null;
+        }
+        super.preStop();
+    }
+
+    @Override
     public void stop() {
+        ServiceStateLogic.setExpectedState(this, Lifecycle.STOPPING);
         // TODO should we deleteLoadBalancer?
         String elbName = checkLoadBalancerName(LOAD_BALANCER_NAME);
         JcloudsLocation loc = getAttribute(JCLOUDS_LOCATION);
@@ -132,7 +237,20 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             throw Exceptions.propagate(e);
         }
     }
+    
+    @Override
+    protected String getAddressOfEntity(Entity member) {
+        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Iterables.find(member.getLocations(),
+                Predicates.instanceOf(JcloudsSshMachineLocation.class), null);
 
+        if (machine != null && machine.getJcloudsId() != null) {
+            return machine.getJcloudsId().split("\\/")[1];
+        } else {
+            LOG.error("Unable to construct JcloudsId representation for {}; skipping in {}",
+                    new Object[]{member, this});
+            return null;
+        }
+    }
     ELBApi newELBApi(LoadBalancerServiceContext loadBalancerServiceContext) {
         return loadBalancerServiceContext.unwrapApi(ELBApi.class);
     }
@@ -152,7 +270,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             reinitLoadBalancer();
         } else if (getRequiredConfig(REPLACE_EXISTING)) {
             checkNotNull(elbName, "load balancer name must not be null if configured to replace any existing");
-            checkArgument(Strings.isNonBlank(elbName), "load balancer name must be non-blank if configured to replace any existing");
+            checkArgument(Strings.isNonBlank(elbName),
+                "load balancer name must be non-blank if configured to replace any existing");
             if (doesLoadBalancerExist(elbName)) {
                 deleteLoadBalancer(elbName);
             }
@@ -163,7 +282,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 sensors().set(LOAD_BALANCER_NAME, elbName);
             } else {
                 if (doesLoadBalancerExist(elbName)) {
-                    throw new IllegalStateException("Cannot create ELB " + elbName + " in " + this + ", because already exists (consider using configuration " + REPLACE_EXISTING.getName() + ")");
+                    throw new IllegalStateException("Cannot create ELB "+elbName+" in " + this
+                        + ", because already exists (consider using configuration "+REPLACE_EXISTING.getName()+")");
                 }
             }
 
@@ -236,6 +356,15 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 .buildView(typeToken(LoadBalancerServiceContext.class));
     }
 
+    private Collection<JcloudsLocationCustomizer> getCustomizers() {
+        // newInstance handles the case that provisioning properties is null.
+        ConfigBag provisioningProperties = ConfigBag.newInstance(config().get(BrooklynConfigKeys.PROVISIONING_PROPERTIES));
+        Collection<JcloudsLocationCustomizer> existingCustomizers =
+            provisioningProperties.get(JcloudsLocationConfig.JCLOUDS_LOCATION_CUSTOMIZERS);
+        return existingCustomizers;
+    }
+
+
     protected void reinitLoadBalancer() {
         JcloudsLocation loc = getLocation();
         String elbName = checkNotNull(checkLoadBalancerName(LOAD_BALANCER_NAME), LOAD_BALANCER_NAME.getName());
@@ -280,7 +409,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
 
     }
-
+    // TODO READD THE AVAILABILITY ZONES -> getAvailabilityZones(loc)
     private void configureAvailabilityZones(ELBApi elbApi, String elbName, LoadBalancer loadBalancer) {
         Set<String> availabilityZoneNames = (getConfig(AVAILABILITY_ZONES) != null) ? ImmutableSet.copyOf(getConfig(AVAILABILITY_ZONES)) : ImmutableSet.<String>of();
 
@@ -347,12 +476,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 .build();
     }
 
-    @Override
-    public void deleteLoadBalancer() {
-        String elbName = checkNotNull(checkLoadBalancerName(LOAD_BALANCER_NAME), "elbName");
-        deleteLoadBalancer(elbName);
-    }
-
     protected String generateUnusedElbName() {
         int maxAttempts = 100;
         String elbName = null;
@@ -361,35 +484,35 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             elbName = new JcloudsMachineNamer().generateNewGroupId(setup);
             boolean exists = doesLoadBalancerExist(elbName);
             if (!exists) return elbName;
-            LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; trying again (attempt {}) to generate name", new Object[]{elbName, this, (i + 2)});
+            LOG.debug("Auto-generated ELB name {} in {} conflicts with existing; " +
+                    "trying again (attempt {}) to generate name", new Object[]{elbName, this, (i+2)});
         }
-        throw new IllegalStateException("Failed to unused auto-genreate ELB name after " + maxAttempts + " attempts (last attempt was " + elbName + ")");
+        throw new IllegalStateException(
+            "Failed to auto-generate unused ELB name after "+maxAttempts+" attempts (last attempt was "+elbName+")");
     }
 
     protected boolean doesLoadBalancerExist(String elbName) {
         JcloudsLocation loc = getLocation();
-        String region = loc.getRegion();
+        String region = getRegionName(loc);
 
-        LoadBalancerServiceContext loadBalancerServiceContext = null;
+        LoadBalancerServiceContext loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
         try {
-            loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
             return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(region+"/"+elbName) != null;
-        } finally {
+        }
+        catch (Exception e){
+            return true;
+        }
+        finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
+
     }
 
-    protected void deleteLoadBalancer(String elbName) {
-        JcloudsLocation loc = getLocation();
-        LOG.debug("Deleting ELB: " + elbName);
 
-        LoadBalancerServiceContext loadBalancerServiceContext = null;
-        try {
-            loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
-            loadBalancerServiceContext.getLoadBalancerService().destroyLoadBalancer(elbName);
-        } finally {
-            Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
-        }
+    @Override
+    public void deleteLoadBalancer() {
+        String elbName = checkNotNull(checkLoadBalancerName(LOAD_BALANCER_NAME), "elbName");
+        deleteLoadBalancer(elbName);
     }
 
     @Override
@@ -416,16 +539,110 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         // see #reload(); no prep required in reconfigureService
     }
 
-    @Override
-    protected String getAddressOfEntity(Entity member) {
-        JcloudsSshMachineLocation machine = (JcloudsSshMachineLocation) Iterables.find(member.getLocations(),
-                Predicates.instanceOf(JcloudsSshMachineLocation.class), null);
+    protected void deleteLoadBalancer(String elbName) {
+        JcloudsLocation loc = getLocation();
+        LOG.debug("Deleting ELB: " + elbName);
+        preReleaseLocationCustomizations();
 
-        if (machine != null && machine.getJcloudsId() != null) {
-            return machine.getJcloudsId().split("\\/")[1];
-        } else {
-            LOG.error("Unable to construct JcloudsId representation for {}; skipping in {}", new Object[]{member, this});
-            return null;
+        LoadBalancerServiceContext loadBalancerServiceContext = null;
+        try {
+            loadBalancerServiceContext = newLoadBalancerServiceContext(loc.getIdentity(), loc.getCredential());
+            loadBalancerServiceContext.getLoadBalancerService().destroyLoadBalancer(elbName);
+        } finally {
+            Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
+        }
+        postReleaseLocationCustomizations();
+
+    }
+
+    private Set<String> getAvailabilityZones(JcloudsLocation loc) {
+        Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
+        if (availabilityZones == null) {
+            String locName = loc.getRegion();
+            if (isAvailabilityZone(locName)) {
+                return ImmutableSet.of(locName); // location is a single availability zone
+            } else {
+                String regionName = getRegionName(loc);
+                AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
+                Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get()
+                        .describeAvailabilityZonesInRegion(regionName);
+
+                Set<String> result = Sets.newLinkedHashSet();
+                for (AvailabilityZoneInfo zone : zones) {
+                    result.add(zone.getZone());
+                }
+                return result;
+            }
+        }
+        return ImmutableSet.copyOf(availabilityZones);
+    }
+
+    protected String getRegionName(JcloudsLocation loc) {
+        String regionName = loc.getRegion();
+        if (Strings.isNonBlank(regionName) && Character.isLetter(regionName.charAt(regionName.length()-1))) {
+            // it's an availability zone; strip off the letter suffix
+            regionName = regionName.substring(0, regionName.length()-1);
+        }
+        return regionName;
+    }
+
+    protected boolean isAvailabilityZone(String name) {
+        return Strings.isNonBlank(name) && Character.isLetter(name.charAt(name.length()-1));
+    }
+
+    private void applyLocationCustomizers(JcloudsLocation loc) {
+
+        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
+        if (customizers != null) {
+            Template template = loc.buildTemplate(loc.getComputeService(), config().getBag(), customizers);
+            for (JcloudsLocationCustomizer customizer : customizers) {
+                customizer.customize(loc, loc.getComputeService(), template);
+                customizer.customize(loc, loc.getComputeService(), template.getOptions());
+            }
+        }
+    }
+
+    private void preReleaseLocationCustomizations() {
+        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
+        if (customizers != null) {
+            for (final JcloudsLocationCustomizer customizer : customizers) {
+                class PreReleaser implements Runnable {
+                    public void run() {
+                        customizer.preRelease(null);
+                    }
+                }
+                safelyRelease(new PreReleaser());
+            }
+        }
+    }
+
+    private void postReleaseLocationCustomizations() {
+        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
+        if (customizers != null) {
+            for (final JcloudsLocationCustomizer customizer : customizers) {
+                class PostReleaser implements Runnable {
+                    public void run() {
+                        customizer.postRelease(null);
+                    }
+                }
+                safelyRelease(new PostReleaser());
+            }
+        }
+    }
+
+    private void safelyRelease(Runnable releaser) {
+        try {
+            releaser.run();
+        } catch (Throwable t) {
+            if (Exceptions.isFatal(t)) {
+                LOG.error("Caught fatal error during customizer release, this customizer is not compatible with "
+                    + ElbController.class.getName());
+                Exceptions.propagate(t);
+            } else {
+                LOG.info("Ignoring non-fatal exception during customizer release, this customizer may not be compatible with {}",
+                    ElbController.class.getName());
+                LOG.debug("Caught non-fatal exception during customizer release", t);
+            }
         }
     }
 
@@ -433,16 +650,8 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         return checkNotNull(getConfig(key), key.getName());
     }
 
-    protected JcloudsLocation getLocation() {
-        JcloudsLocation result = getAttribute(JCLOUDS_LOCATION);
-        return result;
-    }
-
     protected JcloudsLocation inferLocation(@Nullable Collection<? extends Location> locations) {
-        if (getLocation() != null) {
-            return getLocation();
-        }
-        if (locations == null || locations.isEmpty()) locations = getLocations();
+        if (locations==null || locations.isEmpty()) locations = getLocations();
         locations = Locations.getLocationsCheckingAncestors(locations, this);
 
         Maybe<JcloudsLocation> result = Machines.findUniqueElement(locations, JcloudsLocation.class);
@@ -451,11 +660,20 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
 
         if (locations == null || locations.isEmpty()) {
-            throw new IllegalArgumentException("No locations specified when starting " + this);
-        } else if (locations.size() != 1 || Iterables.getOnlyElement(locations) == null) {
-            throw new IllegalArgumentException("Ambiguous locations detected when starting " + this + ": " + locations);
+            throw new IllegalArgumentException("No locations specified when starting "+this);
+        } else if (locations.size() != 1 || Iterables.getOnlyElement(locations)==null) {
+            throw new IllegalArgumentException("Ambiguous locations detected when starting "+this+": "+locations);
         } else {
-            throw new IllegalArgumentException("No matching JcloudsLocation when starting " + this + ": " + locations);
+            throw new IllegalArgumentException("No matching JcloudsLocation when starting "+this+": "+locations);
         }
     }
+
+    private class RepublishAttributesCallable implements Callable<Void> {
+        @Override
+        public Void call() throws Exception {
+            republishAttributes();
+            return null;
+        }
+    }
+
 }

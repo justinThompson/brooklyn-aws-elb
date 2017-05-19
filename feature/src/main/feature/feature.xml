@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<features xmlns="http://karaf.apache.org/xmlns/features/v1.4.0" name="${project.groupId}-${project.version}">
+
+
+    <feature name="amp-aws-elb-dependencies" version="${project.version}" >
+        <bundle dependency="true">mvn:org.apache.jclouds.labs/elb/${jclouds.version}</bundle>
+        <bundle dependency="true">wrap:mvn:org.apache.jclouds/jclouds-loadbalancer/${jclouds.version}</bundle>
+        <!--
+        <bundle dependency="true">mvn:org.apache.jclouds/jclouds-core/${jclouds.version}</bundle>
+        <bundle dependency="true">mvn:org.apache.jclouds.labs/aws-elb/${jclouds.version}</bundle>
+ // TODO one of these is causing the OSGI bundle to fail
+        <feature prerequisite="true">brooklyn-locations-jclouds</feature>
+        <bundle dependency="true">mvn:org.apache.jclouds.api/sts/${jclouds.version}</bundle>
+
+ <bundle dependency="true">mvn:org.apache.jclouds.provider/aws-ec2/${jclouds.version}</bundle>
+ <bundle dependency="true">mvn:org.apache.felix/org.apache.felix.framework</bundle>
+
+
+
+
+
+ <bundle dependency="true">mvn:org.apache.jclouds.api/ec2/2.0.1</bundle>
+
+ -->
+    </feature>
+
+    <feature name="amp-aws-elb" version="${project.version}">
+        <feature prerequisite="true">amp-aws-elb-dependencies</feature>
+
+        <bundle>mvn:io.cloudsoft.aws.elb/brooklyn-aws-elb/0.6.0-SNAPSHOT</bundle>
+    </feature>
+</features>
+

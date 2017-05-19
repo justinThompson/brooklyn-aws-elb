@@ -10,6 +10,7 @@ import static org.testng.Assert.fail;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.URI;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -28,7 +29,6 @@ import org.apache.brooklyn.core.location.PortRanges;
 import org.apache.brooklyn.core.mgmt.internal.LocalManagementContext;
 import org.apache.brooklyn.core.test.BrooklynAppLiveTestSupport;
 import org.apache.brooklyn.entity.group.DynamicCluster;
-import org.apache.brooklyn.entity.software.base.EmptySoftwareProcess;
 import org.apache.brooklyn.entity.software.base.SoftwareProcess;
 import org.apache.brooklyn.entity.webapp.tomcat.Tomcat8Server;
 import org.apache.brooklyn.location.jclouds.JcloudsSshMachineLocation;
@@ -67,6 +67,7 @@ import com.amazonaws.services.ec2.model.DetachInternetGatewayRequest;
 import com.amazonaws.services.ec2.model.InternetGateway;
 import com.amazonaws.services.ec2.model.Subnet;
 import com.amazonaws.services.ec2.model.Vpc;
+import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -88,16 +89,14 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public static final String PROVIDER = "aws-ec2";
     public static final String REGION_NAME = "us-east-1";
     public static final List<String> AVAILABILITY_ZONES = ImmutableList.of("us-east-1b", "us-east-1a");
-    public static final List<String> SUBNETS = ImmutableList.of("us-east-1b", "us-east-1a");
     public static final String LOCATION_SPEC = PROVIDER + (REGION_NAME == null ? "" : ":" + REGION_NAME);
     public static final String LOCATION_AZ_SPEC = PROVIDER + ":" + AVAILABILITY_ZONES.get(0);
-    public static final String TINY_HARDWARE_ID = "t1.micro";
     public static final String SMALL_HARDWARE_ID = "m1.small";
     public static final int TCP_PORT = 1234;
 
     private static final URI warUri = URI.create("https://repo1.maven.org/maven2/org/apache/brooklyn/example/brooklyn-example-hello-world-webapp/0.7.0-incubating/brooklyn-example-hello-world-webapp-0.7.0-incubating.war");
     public static final String HEALTH_CHECK_TARGET_HTTP = "HTTP:81/";
-    public static final String HEALTH_CHECK_TARGET_TCP = "TCP:81/";
+    public static final String HEALTH_CHECK_TARGET_TCP = "TCP:81";
     public static final int HEALTH_CHECK_UNHEALTH_THRESHOLD = 10;
     public static final int HEALTH_CHECK_HEALTH_THRESHOLD = 10;
     public static final int HEALTH_CHECK_INTERVAL = 10;
@@ -171,18 +170,29 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
     @Test(groups="Live")
     public void testCreateLoadBalancer() throws Exception {
-        elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
-                .configure(ElbController.LOAD_BALANCER_NAME, generateElbName("create"))
+        elb = app.createAndManageChild(
+            EntitySpec.create(ElbController.class)
+                .configure(ElbController.LOAD_BALANCER_NAME, "myname-"+System.getProperty("user.name")+"-"+Identifiers.makeRandomId(8))
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
-                .configure(ElbController.INSTANCE_PORT, 8080));
-
+                .configure(ElbController.INSTANCE_PORT, 8080)
+        );
+        
         app.addLocations(locs);
         app.start(ImmutableList.<Location>of());
 
         checkNotNull(elb.getAttribute(ElbController.HOSTNAME));
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_UP, true);
         EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SUBNETS, Predicates.<Collection<String>>notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SECURITY_GROUPS, Predicates.notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.VPC_ID, Predicates.notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.CANONICAL_HOSTED_ZONE_ID, Predicates.notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.CANONICAL_HOSTED_ZONE_NAME, Predicates.notNull());
+
+        Entities.dumpInfo(elb);
     }
+
+
 
     @Test(groups="Live")
     public void testRebindLoadBalancer() throws Exception {
@@ -195,10 +205,16 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         app.start(locs);
         String origHostname = elb.getAttribute(ElbController.HOSTNAME);
 
+        EntityAsserts.assertAttributeEqualsEventually(elb, Attributes.SERVICE_STATE_ACTUAL, Lifecycle.RUNNING);
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SUBNETS, Predicates.<Collection<String>>notNull());
+        EntityAsserts.assertAttributeEventually(elb, ElbController.LOAD_BALANCER_SECURITY_GROUPS, Predicates.notNull());
+
         // With no interesting differences in configuration
         ElbController elb2 = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.LOAD_BALANCER_NAME, elbName)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
+                .configure(ElbController.LOAD_BALANCER_SECURITY_GROUPS, elb.sensors().get(ElbController.LOAD_BALANCER_SECURITY_GROUPS))
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, elb.sensors().get(ElbController.LOAD_BALANCER_SUBNETS))
                 .configure(ElbController.BIND_TO_EXISTING, true));
         elb2.start(locs);
         assertEquals(elb2.getAttribute(ElbController.HOSTNAME), origHostname);
@@ -211,6 +227,8 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.BIND_TO_EXISTING, true)
                 .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_HTTP)
                 .configure(ElbController.INSTANCE_PORT, 1234)
+                .configure(ElbController.LOAD_BALANCER_SECURITY_GROUPS, elb.sensors().get(ElbController.LOAD_BALANCER_SECURITY_GROUPS))
+                .configure(ElbController.LOAD_BALANCER_SUBNETS, elb.sensors().get(ElbController.LOAD_BALANCER_SUBNETS))
                 .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, 1235)
                 .configure(ElbController.LOAD_BALANCER_PROTOCOL, TCP_PROTOCOL));
@@ -270,8 +288,6 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
 
         DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
                 .configure(DynamicCluster.INITIAL_SIZE, 1)
-                .configure(DynamicCluster.ENABLE_AVAILABILITY_ZONES, true)
-                .configure(DynamicCluster.AVAILABILITY_ZONE_NAMES, AVAILABILITY_ZONES)
                 .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(Tomcat8Server.class)
                         .configure("war", warUri.toString())
                         .configure(Tomcat8Server.HTTP_PORT, PortRanges.fromInteger(8080))));
@@ -340,11 +356,9 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
     public void testLoadBalancerWithTcpTargets()  {
         final DynamicCluster cluster = app.createAndManageChild(EntitySpec.create(DynamicCluster.class)
                 .configure(DynamicCluster.INITIAL_SIZE, 1)
-                .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(EmptySoftwareProcess.class)
-                        .configure(SoftwareProcess.PROVISIONING_PROPERTIES, ImmutableMap.<String,Object>of(
-                                "inboundPorts", ImmutableList.of(22, 1235),
-                                "imageId", "us-east-1/ami-7d7bfc14", // centos 6.3
-                                "hardwareId", SMALL_HARDWARE_ID))));
+                .configure(DynamicCluster.MEMBER_SPEC, EntitySpec.create(Tomcat8Server.class)
+                        .configure("war", warUri.toString())
+                        .configure(Tomcat8Server.HTTP_PORT, PortRanges.fromInteger(8080))));
 
         elb = app.createAndManageChild(EntitySpec.create(ElbController.class)
                 .configure(ElbController.AVAILABILITY_ZONES, AVAILABILITY_ZONES)
@@ -354,8 +368,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
                 .configure(ElbController.INSTANCE_PROTOCOL, TCP_PROTOCOL)
                 .configure(ElbController.LOAD_BALANCER_PORT, TCP_PORT)
                 .configure(ElbController.INSTANCE_PORT, 1235)
-                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_TCP)
-                .configure(ElbController.HEALTH_CHECK_UNHEALTHY_THRESHOLD, 10));
+                .configure(ElbController.HEALTH_CHECK_TARGET, HEALTH_CHECK_TARGET_TCP));
 
 
         app.start(ImmutableList.<Location>of(locAZ));
@@ -370,6 +383,7 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         machine.execScript("run-nc-listener", ImmutableList.of("nohup nc -l 1235 &"));
 
 
+        LOG.warn("***********");
         // test the tcp connection directly
         Asserts.succeedsEventually(new Runnable() {
             @Override

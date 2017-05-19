@@ -1,0 +1,31 @@
+###
+# Common tests used in brooklyn-aws-elb
+##
+
+brooklyn.catalog:
+  version: "1.0.0-SNAPSHOT"
+  items:
+  - "https://raw.githubusercontent.com/brooklyncentral/common-catalog-utils/2886bb69d4ed5d0bd1e239544a0a51df4a480ecb/common-tests/src/main/resources/commontests/common.tests.bom"
+
+  # makes a configured number of http requests with a 1 second delay between each
+  - id: test-http-success-repeat
+    name: "HTTP"
+    item:
+      type: org.apache.brooklyn.test.framework.TestSshCommand
+      brooklyn.config:
+        command: |
+          set -x
+          for ((i=1;i<=${REPEAT_COUNT};i++)); do
+            STATUSCODE=$(curl -s -w "%{http_code}" -o /dev/null ${TARGET_URL})
+            if test "$STATUSCODE" -ne "${TARGET_RESPONSE_CODE}"; then
+              exit 1;
+            fi
+            echo $STATUSCODE
+            sleep 1s
+          done
+        env:
+          TARGET_URL: $brooklyn:config("targetUrl")
+          REPEAT_COUNT: $brooklyn:config("repeatCount")
+          TARGET_RESPONSE_CODE: $brooklyn:config("targetResponseCode")
+
+

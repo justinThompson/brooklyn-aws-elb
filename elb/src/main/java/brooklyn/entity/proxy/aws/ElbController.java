@@ -14,9 +14,54 @@ import org.apache.brooklyn.core.sensor.BasicAttributeSensorAndConfigKey;
 import org.apache.brooklyn.core.sensor.Sensors;
 import org.apache.brooklyn.entity.proxy.AbstractNonProvisionedController;
 import org.apache.brooklyn.location.jclouds.JcloudsLocation;
+import org.jclouds.compute.ComputeService;
+import org.jclouds.compute.domain.Template;
+import org.jclouds.compute.domain.TemplateBuilder;
+import org.jclouds.compute.options.TemplateOptions;
 
 import com.google.common.reflect.TypeToken;
 
+/**
+ * An entity to manage an AWS Elastic Load Balancer.
+ * <p>
+ * Use DSL with the {@code loadbalancer.serverpool} configuration key to define the target entities over which the
+ * load balancer will balance requests.
+ * <p>
+ * Although no machine is provisioned when an ELB instance is created, this entity includes support for adding
+ * {@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer}s to permit customization of the entity
+ * based on its location. However, as no machine is provisioned, the only customization methods invoked are those
+ * related to location templates,
+ * <ul>
+ * <li>{@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer#customize(JcloudsLocation, ComputeService, Template)},
+ * <li>{@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer#customize(JcloudsLocation, ComputeService, TemplateBuilder)},
+ * <li>{@link org.apache.brooklyn.location.jclouds.JcloudsLocationCustomizer#customize(JcloudsLocation, ComputeService, TemplateOptions)}.
+ *</ul>
+ * <p>
+ * Example:
+<pre>
+name: elb-test
+location: aws-ec2:us-east-1
+services:
+
+- type: brooklyn.entity.proxy.aws.ElbController
+  name: ELB
+  brooklyn.config:
+    aws.elb.loadBalancerName: br-example-1
+    aws.elb.availabilityZones: [us-east-1a, us-east-1b]
+    aws.elb.loadBalancerProtocol: HTTP
+    aws.elb.instancePort: 8080
+    loadbalancer.serverpool: $brooklyn:entity("cluster")
+
+- type: org.apache.brooklyn.entity.group.DynamicCluster
+  id: cluster
+  name: cluster
+  brooklyn.config:
+    initialSize: 1
+    memberSpec:
+      $brooklyn:entitySpec:
+        type: org.apache.brooklyn.entity.software.base.EmptySoftwareProcess
+ </pre>
+ */
 @ImplementedBy(ElbControllerImpl.class)
 public interface ElbController extends AbstractNonProvisionedController {
 
@@ -35,7 +80,7 @@ public interface ElbController extends AbstractNonProvisionedController {
 
     ConfigKey<Boolean> BIND_TO_EXISTING = ConfigKeys.newBooleanConfigKey(
             "aws.elb.bindToExisting", 
-            "Whether to bind to an existing load balance, or create a new one", 
+            "Whether to bind to an existing load balancer or create a new one",
             false);
     
     ConfigKey<Boolean> REPLACE_EXISTING = ConfigKeys.newBooleanConfigKey(
@@ -78,19 +123,16 @@ public interface ElbController extends AbstractNonProvisionedController {
             null);
 
     @SuppressWarnings("serial")
-    ConfigKey<Collection<String>> LOAD_BALANCER_SECURITY_GROUPS = ConfigKeys.newConfigKey(
+    BasicAttributeSensorAndConfigKey<Collection<String>> LOAD_BALANCER_SECURITY_GROUPS = new BasicAttributeSensorAndConfigKey<>(
             new TypeToken<Collection<String>>() {}, 
             "aws.elb.loadBalancerSecurityGroups", 
-            "The security groups assigned to your LoadBalancer within your VPC",
-            null);
+            "The security groups assigned to your LoadBalancer within your VPC");
     
-    @SuppressWarnings("serial")
-    ConfigKey<Collection<String>> LOAD_BALANCER_SUBNETS = ConfigKeys.newConfigKey(
-            new TypeToken<Collection<String>>() {}, 
+    BasicAttributeSensorAndConfigKey<Collection<String>> LOAD_BALANCER_SUBNETS = new BasicAttributeSensorAndConfigKey<>(
+            new TypeToken<Collection<String>>() {},
             "aws.elb.loadBalancerSubnets", 
-            "A list of subnet IDs in your VPC to attach to your LoadBalancer",
-            null);
-    
+            "A list of subnet IDs in your VPC to attach to your LoadBalancer");
+
     // http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/elasticloadbalancing/model/HealthCheck.html#setTarget(java.lang.String)
     ConfigKey<String> HEALTH_CHECK_TARGET = ConfigKeys.newStringConfigKey(
             "aws.elb.healthCheck.target", "The instance being checked. The protocol is either TCP, HTTP, HTTPS, or SSL. The range of valid ports is 1-65535");
@@ -106,6 +148,18 @@ public interface ElbController extends AbstractNonProvisionedController {
     
     ConfigKey<Integer> HEALTH_CHECK_UNHEALTHY_THRESHOLD = ConfigKeys.newIntegerConfigKey(
             "aws.elb.healthCheck.unhealthyThreshold", "The number of consecutive health probe failures required before moving the instance to the Unhealthy state", 2);
+
+    AttributeSensor<String> CANONICAL_HOSTED_ZONE_NAME = Sensors.newStringSensor(
+            "aws.elb.canonicalHostedZoneName",
+            "The hosted zone name of the ELB");
+
+    AttributeSensor<String> CANONICAL_HOSTED_ZONE_ID = Sensors.newStringSensor(
+            "aws.elb.canonicalHostedZoneId",
+            "The hosted zone ID of the ELB");
+
+    AttributeSensor<String> VPC_ID = Sensors.newStringSensor(
+            "aws.elb.vpcId",
+            "The id of the VPC the ELB is attached to");
 
     @Effector(description="Deletes the ELB")
     void deleteLoadBalancer();

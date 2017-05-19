@@ -1,0 +1,147 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+
+    <parent>
+        <groupId>io.cloudsoft.aws.elb</groupId>
+        <artifactId>brooklyn-aws-elb-parent</artifactId>
+        <version>0.6.0-SNAPSHOT</version> <!-- BROOKLYN_AWS_ELB_VERSION -->
+    </parent>
+
+    <artifactId>brooklyn-aws-elb</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Brooklyn AWS Elastic Load Balancer</name>
+    <description>
+        Brooklyn AWS Elastic Load Balancer
+    </description>
+    <url>https://github.com/cloudsoft/brooklyn-aws-elb/</url>
+
+    <properties>
+        <brooklyn.jackson.version>2.7.5</brooklyn.jackson.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.apache.brooklyn</groupId>
+            <artifactId>brooklyn-software-webapp</artifactId>
+            <version>${brooklyn.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.jclouds.labs</groupId>
+            <artifactId>aws-elb</artifactId>
+            <version>${jclouds.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.jclouds.labs</groupId>
+            <artifactId>elb</artifactId>
+            <version>${jclouds.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.jclouds</groupId>
+            <artifactId>jclouds-loadbalancer</artifactId>
+            <version>${jclouds.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.jclouds</groupId>
+            <artifactId>jclouds-core</artifactId>
+            <version>${jclouds.version}</version>
+        </dependency>
+
+        <!-- test dependencies -->
+        <dependency>
+            <groupId>org.testng</groupId>
+            <artifactId>testng</artifactId>
+            <version>6.8.8</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!--
+                jsr311 excluded above, this module is JAX-RS version independent. Version decided at user.
+                For tests running in the module still need to use a specific dependency - use JAX-RS 2.0 as
+                that's what is used in standard build.
+            -->
+            <groupId>javax.ws.rs</groupId>
+            <artifactId>javax.ws.rs-api</artifactId>
+            <version>2.0.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.amazonaws</groupId>
+            <artifactId>aws-java-sdk</artifactId>
+            <version>${aws.sdk.version}</version>
+            <scope>test</scope>
+            <!-- The included version of Jackson breaks our REST UI -->
+            <exclusions>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-databind</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-annotations</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>com.fasterxml.jackson.core</artifactId>
+                    <groupId>jackson-core</groupId>
+                </exclusion>
+                <exclusion>
+                    <artifactId>joda-time</artifactId>
+                    <groupId>joda-time</groupId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.brooklyn</groupId>
+            <artifactId>brooklyn-all</artifactId>
+            <version>${brooklyn.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.brooklyn</groupId>
+            <artifactId>brooklyn-test-support</artifactId>
+            <version>${brooklyn.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.brooklyn</groupId>
+            <artifactId>brooklyn-core</artifactId>
+            <classifier>tests</classifier>
+            <scope>test</scope>
+            <version>${brooklyn.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.brooklyn</groupId>
+            <artifactId>brooklyn-software-database</artifactId>
+            <scope>test</scope>
+            <version>${brooklyn.version}</version>
+        </dependency>
+    </dependencies>
+
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.felix</groupId>
+                <artifactId>maven-bundle-plugin</artifactId>
+                <configuration>
+                    <instructions>
+                        <Bundle-SymbolicName>${project.artifactId}</Bundle-SymbolicName>
+                        <Import-Package>
+                            com.google.common.base;version="[16.0,19)",
+                            com.google.common.collect;version="[16.0,19)",
+                            com.google.common.reflect;version="[16.0,19)",
+                            com.google.common.io;version="[16.0,19)",
+                            *
+                        </Import-Package>
+                    </instructions>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

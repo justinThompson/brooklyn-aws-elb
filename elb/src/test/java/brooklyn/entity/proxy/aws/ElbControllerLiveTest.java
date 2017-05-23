@@ -382,8 +382,6 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         machine.execScript("install-nc", installNcCommand);
         machine.execScript("run-nc-listener", ImmutableList.of("nohup nc -l 1235 &"));
 
-
-        LOG.warn("***********");
         // test the tcp connection directly
         Asserts.succeedsEventually(new Runnable() {
             @Override

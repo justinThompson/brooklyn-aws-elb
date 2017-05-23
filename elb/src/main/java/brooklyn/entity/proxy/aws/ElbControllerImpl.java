@@ -13,7 +13,6 @@ import javax.annotation.Nullable;
 import org.apache.brooklyn.api.entity.Entity;
 import org.apache.brooklyn.api.entity.Group;
 import org.apache.brooklyn.api.location.Location;
-import org.apache.brooklyn.api.sensor.AttributeSensor;
 import org.apache.brooklyn.config.ConfigKey;
 import org.apache.brooklyn.core.entity.Attributes;
 import org.apache.brooklyn.core.entity.BrooklynConfigKeys;
@@ -38,9 +37,7 @@ import org.apache.brooklyn.util.guava.Maybe;
 import org.apache.brooklyn.util.text.Strings;
 import org.apache.brooklyn.util.time.Duration;
 import org.jclouds.ContextBuilder;
-import org.jclouds.aws.ec2.AWSEC2Api;
 import org.jclouds.compute.domain.Template;
-import org.jclouds.ec2.domain.AvailabilityZoneInfo;
 import org.jclouds.elb.ELBApi;
 import org.jclouds.elb.domain.HealthCheck;
 import org.jclouds.elb.domain.Listener;
@@ -87,7 +84,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
      *  to see nothing else is missed
      */
 
-    // TODO Add unit tests for rebind
 
     // TODO Use the SoftwareProcess's approach of expectedState and serviceUpIndicators
     // TODO What should lifecycle be if effector deleteLoadBalancer is called?
@@ -130,7 +126,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 .build();
     }
 
-    // TODO REPLACE THIS USE OF JAVA CLIENT
     protected void republishAttributes() {
         Lifecycle state = ServiceStateLogic.getActualState(this);
         if (state != Lifecycle.RUNNING) {
@@ -183,7 +178,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
     public void stop() {
         ServiceStateLogic.setExpectedState(this, Lifecycle.STOPPING);
         // TODO should we deleteLoadBalancer?
-        String elbName = checkLoadBalancerName(LOAD_BALANCER_NAME);
+        String elbName = checkLoadBalancerName();
         JcloudsLocation loc = getAttribute(JCLOUDS_LOCATION);
         if (elbName != null && loc != null && doesLoadBalancerExist(elbName)) {
             deleteLoadBalancer(elbName);
@@ -209,7 +204,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
                 LOG.warn("No location for ELB " + this + ", cannot reload");
                 return;
             }
-            String elbName = checkLoadBalancerName(LOAD_BALANCER_NAME);
+            String elbName = checkLoadBalancerName();
             Set<String> targetAddresses = super.getServerPoolAddresses();
 
             LoadBalancerServiceContext loadBalancerServiceContext = null;
@@ -255,23 +250,20 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         return loadBalancerServiceContext.unwrapApi(ELBApi.class);
     }
 
-    private String checkLoadBalancerName(AttributeSensor<String> attributeSensor) {
-        String elbName = getAttribute(attributeSensor);
+    private String checkLoadBalancerName() {
+        String elbName = getAttribute(LOAD_BALANCER_NAME);
+        checkNotNull(elbName, "load balancer name must not be null");
+        checkArgument(Strings.isNonBlank(elbName), "load balancer name must be non-blank");
         checkArgument(elbName.length() < 32);
         return elbName;
     }
 
     protected void startLoadBalancer() {
-        String elbName = checkLoadBalancerName(LOAD_BALANCER_NAME);
+        String elbName = checkLoadBalancerName();
 
         if (getRequiredConfig(BIND_TO_EXISTING)) {
-            checkNotNull(elbName, "load balancer name must not be null if binding to existing");
-            checkArgument(Strings.isNonBlank(elbName), "load balancer name must be non-blank if binding to existing");
             reinitLoadBalancer();
         } else if (getRequiredConfig(REPLACE_EXISTING)) {
-            checkNotNull(elbName, "load balancer name must not be null if configured to replace any existing");
-            checkArgument(Strings.isNonBlank(elbName),
-                "load balancer name must be non-blank if configured to replace any existing");
             if (doesLoadBalancerExist(elbName)) {
                 deleteLoadBalancer(elbName);
             }
@@ -367,7 +359,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     protected void reinitLoadBalancer() {
         JcloudsLocation loc = getLocation();
-        String elbName = checkNotNull(checkLoadBalancerName(LOAD_BALANCER_NAME), LOAD_BALANCER_NAME.getName());
+        String elbName = checkNotNull(checkLoadBalancerName(), LOAD_BALANCER_NAME.getName());
 
         String elbScheme = getConfig(LOAD_BALANCER_SCHEME);
 
@@ -511,7 +503,7 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
 
     @Override
     public void deleteLoadBalancer() {
-        String elbName = checkNotNull(checkLoadBalancerName(LOAD_BALANCER_NAME), "elbName");
+        String elbName = checkNotNull(checkLoadBalancerName(), "elbName");
         deleteLoadBalancer(elbName);
     }
 
@@ -553,28 +545,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         }
         postReleaseLocationCustomizations();
 
-    }
-
-    private Set<String> getAvailabilityZones(JcloudsLocation loc) {
-        Collection<String> availabilityZones = getConfig(AVAILABILITY_ZONES);
-        if (availabilityZones == null) {
-            String locName = loc.getRegion();
-            if (isAvailabilityZone(locName)) {
-                return ImmutableSet.of(locName); // location is a single availability zone
-            } else {
-                String regionName = getRegionName(loc);
-                AWSEC2Api ec2api = loc.getComputeService().getContext().unwrapApi(AWSEC2Api.class);
-                Set<AvailabilityZoneInfo> zones = ec2api.getAvailabilityZoneAndRegionApi().get()
-                        .describeAvailabilityZonesInRegion(regionName);
-
-                Set<String> result = Sets.newLinkedHashSet();
-                for (AvailabilityZoneInfo zone : zones) {
-                    result.add(zone.getZone());
-                }
-                return result;
-            }
-        }
-        return ImmutableSet.copyOf(availabilityZones);
     }
 
     protected String getRegionName(JcloudsLocation loc) {

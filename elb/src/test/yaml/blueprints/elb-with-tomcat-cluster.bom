@@ -12,7 +12,7 @@ brooklyn.catalog:
           id: loadbalancer
           name: ELB
           brooklyn.config:
-            aws.elb.loadBalancerName: br-example-1
+            aws.elb.loadBalancerName: $brooklyn:formatString("br-example-%s", attributeWhenReady("application.id"))
             aws.elb.availabilityZones: [us-east-1a, us-east-1b]
             aws.elb.loadBalancerProtocol: HTTP
             aws.elb.instancePort: 8080

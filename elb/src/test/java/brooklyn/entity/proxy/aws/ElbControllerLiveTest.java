@@ -140,6 +140,8 @@ public class ElbControllerLiveTest extends BrooklynAppLiveTestSupport {
         mgmt = new LocalManagementContext(brooklynProperties);
 
         super.setUp();
+        checkNotNull(identity, "Identity must not be null");
+        checkNotNull(credential, "Credential must not be null");
         identity = brooklynProperties.getFirst("brooklyn.location.jclouds.aws-ec2.identity");
         credential = brooklynProperties.getFirst("brooklyn.location.jclouds.aws-ec2.credential");
 

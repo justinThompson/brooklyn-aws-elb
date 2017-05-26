@@ -4,9 +4,6 @@ Brooklyn support for ELB
 Gives support for AWS's Elastic Load Balancer.
 
 Note: this will likely be rolled into core https://github.com/brooklyncentral/brooklyn.
-However, it currently depends on the 10MB aws-sdk so this dependency has deliberately not 
-been added to core brooklyn.
-
 
 ## Build
 
@@ -26,12 +23,12 @@ To build, run `mvn clean install`.
 
 
 
-## Installation AMP
+## Installation in AMP
 
 Start AMP and add the feature
     
     # Start Brooklyn/AMP karaf
-    ${BROOKLYN_HOME}/bin/karaf
+    ${AMP_HOME}/bin/karaf
     
     # Add io.cloudsoft.aws.elb feature repo
     feature:repo-add mvn:io.cloudsoft.aws.elb/feature/0.6.0-SNAPSHOT/xml/features
@@ -39,26 +36,23 @@ Start AMP and add the feature
     # Add the feature
     feature:install amp-aws-elb
 
-## Installation Brooklyn
-
-Start Brooklyn and add the feature
+## Installation in Brooklyn
         
-    # Update the setenv file
-    
-    vim ${BROOKLYN_HOME}/bin/setenv
-    
-    # Add io.cloudsoft domain to ClassLoaderUtils whitelist so that io.cloudsoft bundles are also scanned for classes.
-    WHITELIST='org.apache.brooklyn.*|io.brooklyn.*|io.cloudsoft.*'
-    export EXTRA_JAVA_OPTS="-Dorg.apache.brooklyn.classloader.fallback.bundles=${WHITELIST} ${EXTRA_JAVA_OPTS}"
-    
-    # Start Brooklyn/AMP karaf
-    ${BROOKLYN_HOME}/bin/karaf
-    
-    # Add io.cloudsoft.aws.elb feature repo
-    feature:repo-add mvn:io.cloudsoft.aws.elb/feature/0.6.0-SNAPSHOT/xml/features
-    
-    # Add the feature
-    feature:install amp-aws-elb
+Append the following to `$BROOKLYN_HOME/bin/setenv`:
+ 
+     # Add io.cloudsoft domain to ClassLoaderUtils whitelist so that io.cloudsoft bundles are also scanned for classes.
+     WHITELIST='org.apache.brooklyn.*|io.brooklyn.*|io.cloudsoft.*'
+     export EXTRA_JAVA_OPTS="-Dorg.apache.brooklyn.classloader.fallback.bundles=${WHITELIST} ${EXTRA_JAVA_OPTS}"
+ 
+Then start Brooklyn and install the feature:
+ 
+     ${BROOKLYN_HOME}/bin/karaf
+     
+     # Add io.cloudsoft.aws.elb feature repo
+     feature:repo-add mvn:io.cloudsoft.aws.elb/feature/0.6.0-SNAPSHOT/xml/features
+     
+     # Add the feature
+     feature:install amp-aws-elb
 
 
 ## Example 

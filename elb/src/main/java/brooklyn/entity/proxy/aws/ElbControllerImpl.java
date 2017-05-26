@@ -491,9 +491,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
         try {
             return loadBalancerServiceContext.getLoadBalancerService().getLoadBalancerMetadata(region+"/"+elbName) != null;
         }
-        catch (Exception e){
-            return true;
-        }
         finally {
             Closeables2.closeQuietly(loadBalancerServiceContext.unwrap());
         }
@@ -554,22 +551,6 @@ public class ElbControllerImpl extends AbstractNonProvisionedControllerImpl impl
             regionName = regionName.substring(0, regionName.length()-1);
         }
         return regionName;
-    }
-
-    protected boolean isAvailabilityZone(String name) {
-        return Strings.isNonBlank(name) && Character.isLetter(name.charAt(name.length()-1));
-    }
-
-    private void applyLocationCustomizers(JcloudsLocation loc) {
-
-        final Collection<JcloudsLocationCustomizer> customizers = getCustomizers();
-        if (customizers != null) {
-            Template template = loc.buildTemplate(loc.getComputeService(), config().getBag(), customizers);
-            for (JcloudsLocationCustomizer customizer : customizers) {
-                customizer.customize(loc, loc.getComputeService(), template);
-                customizer.customize(loc, loc.getComputeService(), template.getOptions());
-            }
-        }
     }
 
     private void preReleaseLocationCustomizations() {
